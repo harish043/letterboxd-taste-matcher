@@ -63,10 +63,11 @@ function authorized(req) {
   if (!TOKEN) return true;
   const header = req.headers.authorization || "";
   const expected = `Bearer ${TOKEN}`;
-  return crypto.timingSafeEqual(
-    Buffer.from(header),
-    Buffer.from(expected)
-  );
+  // timingSafeEqual throws on unequal buffer lengths — compare lengths first,
+  // and only do the constant-time compare when they match.
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 async function handleMatch(req, res) {
@@ -135,20 +136,36 @@ async function handleMatch(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
+  try {
+    const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
-  if (req.method === "GET" && url.pathname === "/health") {
-    return sendJson(res, 200, { ok: true });
-  }
-
-  if (req.method === "POST" && url.pathname === "/match") {
-    if (!authorized(req)) {
-      return sendJson(res, 401, { error: "Unauthorized." });
+    if (req.method === "GET" && url.pathname === "/health") {
+      return sendJson(res, 200, { ok: true });
     }
-    return handleMatch(req, res);
-  }
 
-  sendJson(res, 404, { error: "Not found." });
+    if (req.method === "POST" && url.pathname === "/match") {
+      if (!authorized(req)) {
+        return sendJson(res, 401, { error: "Unauthorized." });
+      }
+      return handleMatch(req, res);
+    }
+
+    sendJson(res, 404, { error: "Not found." });
+  } catch (error) {
+    // Never let a malformed request crash the whole process.
+    console.error("Request handler error:", error);
+    if (!res.headersSent) {
+      sendJson(res, 500, { error: "Internal server error." });
+    }
+  }
+});
+
+// Defensive: keep the service alive if something slips through the handler.
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught exception:", error);
+});
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled rejection:", error);
 });
 
 server.listen(PORT, "0.0.0.0", () => {

@@ -108,6 +108,7 @@ export async function POST(request: Request) {
 
     if (message.includes("No favorites section")) {
       let egressIp = "unknown";
+      let plainFetchResult = "n/a";
       try {
         const r = await fetch("https://api.ipify.org?format=json", {
           signal: AbortSignal.timeout(5000),
@@ -117,8 +118,21 @@ export async function POST(request: Request) {
       } catch {
         // best-effort
       }
+      try {
+        const r = await fetch("https://letterboxd.com/dave/", {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+          signal: AbortSignal.timeout(15000),
+        });
+        const body = await r.text();
+        const challenged = body.includes("Just a moment");
+        plainFetchResult = `status=${r.status} challenged=${challenged} bytes=${body.length}`;
+      } catch (e) {
+        plainFetchResult = `error=${e instanceof Error ? e.message : "unknown"}`;
+      }
       return Response.json(
-        { error: `Username "${username}" not found or has no Top 4. Debug: ${message} [egress=${egressIp}]` },
+        {
+          error: `Username "${username}" not found or has no Top 4. Debug: ${message} [egress=${egressIp}] [plainFetch=${plainFetchResult}]`,
+        },
         { status: 404 }
       );
     }

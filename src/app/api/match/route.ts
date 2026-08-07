@@ -108,7 +108,7 @@ export async function POST(request: Request) {
 
     if (message.includes("No favorites section")) {
       return Response.json(
-        { error: `Username "${username}" not found or has no Top 4.` },
+        { error: `Username "${username}" not found or has no Top 4. Debug: ${message}` },
         { status: 404 }
       );
     }

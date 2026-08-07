@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Provision an e2-micro Debian instance to run the Letterboxd scraper service
-# with egress routed through Cloudflare WARP (1.1.1.1), which bypasses
-# Letterboxd's Cloudflare "Just a moment" challenge.
+# Provision an e2-micro Ubuntu 24.04 LTS (noble) instance to run the
+# Letterboxd scraper service with egress routed through Cloudflare WARP
+# (1.1.1.1), which bypasses Letterboxd's Cloudflare "Just a moment" challenge.
 #
 # Usage: sudo bash provision.sh
 set -euo pipefail
@@ -10,7 +10,10 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "==> Installing system deps"
 apt-get update -y
-apt-get install -y curl ca-certificates gnupg lsb-release ufw
+apt-get install -y curl ca-certificates gnupg lsb-release ufw git
+
+CODENAME=$(lsb_release -cs)
+echo "==> Detected Ubuntu codename: ${CODENAME}"
 
 echo "==> Installing Node.js 20 (LTS)"
 curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
@@ -21,18 +24,38 @@ npm --version
 echo "==> Installing Cloudflare WARP (1.1.1.1)"
 curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
   | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ $(lsb_release -cs) main" \
+# Cloudflare publishes builds for `noble` (Ubuntu 24.04). If the repo does not
+# yet have the exact codename, fall back to `jammy` (Ubuntu 22.04), which ships
+# the same WARP client .deb and installs cleanly on noble.
+WARP_CODENAME="${CODENAME}"
+if ! curl -fsSL -o /dev/null "https://pkg.cloudflareclient.com/dists/${CODENAME}/Release"; then
+  echo "==> Codename ${CODENAME} not found in WARP repo; falling back to jammy"
+  WARP_CODENAME="jammy"
+fi
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ ${WARP_CODENAME} main" \
   | tee /etc/apt/sources.list.d/cloudflare-client.list
 apt-get update -y
 apt-get install -y cloudflare-warp
 
+echo "==> Starting WARP daemon"
+systemctl start warp-svc || true
+sleep 2
+
 echo "==> Registering and connecting WARP (proxy mode on 127.0.0.1:40000)"
-warp-cli --accept-tos registration new || true
-warp-cli --accept-tos mode proxy || true
-warp-cli --accept-tos proxy port 40000 || true
-warp-cli --accept-tos connect || true
-sleep 3
+# Accept the ToS / license silently (WARP free tier, no license key).
+warp-cli --accept-tos registration new </dev/null || true
+warp-cli --accept-tos mode proxy </dev/null || true
+warp-cli --accept-tos proxy port 40000 </dev/null || true
+warp-cli --accept-tos connect </dev/null || true
+sleep 5
 warp-cli --accept-tos status || true
+
+echo "==> Verifying WARP proxy is listening"
+if ss -ltn | grep -q ':40000'; then
+  echo "==> WARP proxy listening on 127.0.0.1:40000"
+else
+  echo "!! WARN: WARP proxy not detected on 40000. Check 'warp-cli --accept-tos status'."
+fi
 
 echo "==> Cloning repo"
 mkdir -p /opt/letterboxd-taste-matcher

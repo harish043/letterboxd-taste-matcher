@@ -1,6 +1,7 @@
 [Unit]
 Description=Letterboxd taste matcher scraper service
-After=network.target
+After=network.target warp-svc.service
+Wants=warp-svc.service
 
 [Service]
 Type=simple

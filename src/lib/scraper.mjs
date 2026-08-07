@@ -61,9 +61,7 @@ function resolveCurlBinary() {
  */
 async function fetchHtml(url, signal) {
   // When SCRAPER_FETCH_URL is set, route fetches through a Cloudflare Worker
-  // relay (workers/fetch-relay). The worker's egress is a Cloudflare IP, which
-  // Letterboxd's Cloudflare does not challenge — the reliable path for Vercel.
-  // Falls back to the platform curl transport otherwise (local dev).
+  // relay. (Kept for reference; not the working path.)
   const relayUrl = process.env.SCRAPER_FETCH_URL;
   if (relayUrl) {
     const relay = new URL(
@@ -84,10 +82,12 @@ async function fetchHtml(url, signal) {
 
   const isWindows = process.env.OS === "Windows_NT";
 
-  // When SCRAPER_PROXY is set (residential proxy on Vercel), the proxy's egress
-  // IP is what passes Letterboxd's Cloudflare — TLS impersonation is not needed
-  // and its flags (--ech/--alps/--tls-permute-extensions) can break the HTTPS
-  // CONNECT tunnel. Use a plain browser-identical curl through the proxy.
+  // When SCRAPER_PROXY is set (residential proxy on Vercel), use curl through
+  // the proxy with plain browser headers. The proxy's residential egress IP is
+  // what passes Letterboxd's Cloudflare — TLS impersonation is not needed (its
+  // BoringSSL flags can break the HTTPS CONNECT tunnel intermittently). Node's
+  // native fetch is NOT usable here: undici's TLS fingerprint is detected even
+  // through a residential proxy (403), whereas curl passes (200).
   const proxy = process.env.SCRAPER_PROXY;
 
   const browserHeaders = [
@@ -168,11 +168,22 @@ async function fetchHtml(url, signal) {
         url,
       ];
 
-  const result = await execFileP(resolveCurlBinary(), curlArgs, {
-    maxBuffer: 10 * 1024 * 1024,
-    signal,
-  });
-  return result.stdout;
+  // Retry transient tunnel failures (e.g. curl-impersonate BoringSSL
+  // "BAD_DECRYPT" through an HTTP proxy) a few times.
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const result = await execFileP(resolveCurlBinary(), curlArgs, {
+        maxBuffer: 10 * 1024 * 1024,
+        signal,
+      });
+      return result.stdout;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await sleep(500);
+    }
+  }
+  throw lastError;
 }
 
 /**

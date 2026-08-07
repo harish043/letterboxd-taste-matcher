@@ -15,7 +15,10 @@ export const maxDuration = 60;
 const USERNAME_REGEX = /^[a-zA-Z0-9_]{1,30}$/;
 const MAX_PAGES_PER_FILM = 20;
 const DEFAULT_PAGES_PER_FILM = 15;
-const DEFAULT_CONCURRENCY = 8;
+// Measured sweet spot: higher concurrency saturates the proxy and re-triggers
+// failures; lower leaves latency on the table. 12 ≈ 21s for 60 pages (vs 34s
+// at 8).
+const DEFAULT_CONCURRENCY = 12;
 
 export async function POST(request: Request) {
   let body: {

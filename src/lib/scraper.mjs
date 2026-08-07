@@ -9,8 +9,10 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 // Hard per-fetch timeout. Residential proxies charge per open connection and
-// Vercel functions time out, so a slow/hung page must abort quickly.
-const FETCH_TIMEOUT_MS = 15000;
+// Vercel functions time out, so a slow/hung page must abort quickly. Most
+// successful responses arrive in 2–4s; 10s catches stragglers without letting
+// a hung connection eat the whole function budget.
+const FETCH_TIMEOUT_MS = 10000;
 const MAX_ATTEMPTS = 3;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -105,10 +107,14 @@ function resolveCurlBinary() {
  * failures and Cloudflare challenge pages are retried up to MAX_ATTEMPTS.
  *
  * @param {string} url
+ * @param {object} [options]
+ * @param {number} [options.attempts] Max fetch attempts (defaults to MAX_ATTEMPTS).
+ *   Fans-page fetches pass attempts=1 because the worker pool already tolerates
+ *   a dropped page — retrying here just burns the function budget.
  * @returns {Promise<string>} The HTML body.
  * @throws {ProxyTimeoutError|ProxyError|LetterboxdForbiddenError}
  */
-async function fetchHtml(url) {
+async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
   const proxy = applyStickySession(process.env.SCRAPER_PROXY);
 
   const browserHeaders = [
@@ -129,6 +135,12 @@ async function fetchHtml(url) {
   const curlArgs = [
     "-sS", // silent, but surface errors
     "--http1.1",
+    // On Windows, curl uses the schannel TLS backend, which is prone to
+    // spurious "server closed abruptly (missing close_notify)" failures and
+    // TLS handshake errors on some proxies. --ssl-no-revoke skips certificate
+    // revocation checks and is ignored by OpenSSL builds (Linux/Vercel), so it
+    // is safe everywhere.
+    "--ssl-no-revoke",
     "--max-time",
     String(Math.ceil(FETCH_TIMEOUT_MS / 1000)),
     ...(proxy ? ["--proxy", proxy] : []),
@@ -138,7 +150,7 @@ async function fetchHtml(url) {
 
   let lastError;
 
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -153,7 +165,7 @@ async function fetchHtml(url) {
       // report the profile as inaccessible.
       if (result.stdout.includes("Just a moment")) {
         lastError = new Error("Cloudflare challenge");
-        if (attempt < MAX_ATTEMPTS - 1) {
+        if (attempt < attempts - 1) {
           await sleep(600);
           continue;
         }
@@ -172,7 +184,7 @@ async function fetchHtml(url) {
         lastError = new ProxyError(url, error.message);
       }
 
-      if (attempt < MAX_ATTEMPTS - 1) await sleep(500);
+      if (attempt < attempts - 1) await sleep(500);
     } finally {
       clearTimeout(timer);
     }
@@ -270,12 +282,15 @@ export function parseFansPage(html, slug, page) {
  * @param {number} page 1-indexed page number.
  * @returns {Promise<{ usernames: string[], hasNext: boolean, count: number|null }>}
  */
-async function fetchFansPage(slug, page) {
-  const url =
-    page === 1
-      ? `${BASE_URL}/film/${slug}/fans/`
-      : `${BASE_URL}/film/${slug}/fans/page/${page}/`;
-  const html = await fetchHtml(url);
+async function fetchFansPage(slug, page, { attempts = 1 } = {}) {
+  // Always use the paginated URL form — even for page 1. The bare `/fans/` URL
+  // triggers a Cloudflare challenge nearly 100% of the time, while
+  // `/fans/page/1/` returns the same content with a 200.
+  const url = `${BASE_URL}/film/${slug}/fans/page/${page}/`;
+  // Default to a single attempt: the worker pool skips a dropped page anyway,
+  // so retrying here (up to 10s per attempt) would only burn the function
+  // budget. Callers that need the fan count pass attempts: 3.
+  const html = await fetchHtml(url, { attempts });
   return parseFansPage(html, slug, page);
 }
 
@@ -309,7 +324,11 @@ export async function getSharedFans(
   const firstPageResults = await Promise.all(
     slugs.map(async (slug) => {
       try {
-        const { usernames, hasNext, count } = await fetchFansPage(slug, 1);
+        // Page 1 is load-bearing: it carries the fan count that determines the
+        // spread schedule. Give it the full retry budget.
+        const { usernames, hasNext, count } = await fetchFansPage(slug, 1, {
+          attempts: 3,
+        });
         return { slug, usernames, hasNext, count };
       } catch {
         return { slug, usernames: [], hasNext: false, count: null };
@@ -354,11 +373,11 @@ export async function getSharedFans(
     while (cursor < tasks.length) {
       const { slug, page } = tasks[cursor++];
       try {
-        const { usernames } = await fetchFansPage(slug, page);
+        const { usernames } = await fetchFansPage(slug, page, { attempts: 1 });
         for (const username of usernames) perFilm[slug].fans.add(username);
         perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, page);
       } catch {
-        // Skip individual page failures; per-page retries happen in fetchHtml.
+        // Skip individual page failures; a single dropped page is tolerable.
       }
       if (delayMs > 0) await sleep(delayMs);
     }

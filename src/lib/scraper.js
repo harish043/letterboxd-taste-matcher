@@ -18,7 +18,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // binary whose TLS ClientHello is trusted:
 //   - Windows dev: the bundled curl.exe (Schannel).
 //   - Linux serverless (Vercel): curl-impersonate's Chrome uTLS binary, which
-//     ships with node-curl-impersonate.
+//     ships with apify-node-curl-impersonate (a current curl-impersonate build
+//     with Chrome 133 fingerprints).
 //
 // IMPORTANT: the platform check must NOT be a build-time constant. Bundlers
 // (Turbopack) fold `os.platform()` / `process.platform` into the platform the
@@ -36,9 +37,9 @@ function resolveCurlBinary() {
   const candidate = path.join(
     process.cwd(),
     "node_modules",
-    "node-curl-impersonate",
+    "apify-node-curl-impersonate",
     "bin",
-    "curl-impersonate-chrome-linux-x86"
+    "curl-impersonate-linux-x86"
   );
   try {
     fs.chmodSync(candidate, 0o755);
@@ -81,26 +82,35 @@ async function fetchHtml(url, signal) {
         "30",
         "--ciphers",
         "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384,ECDHE-ECDSA-CHACHA20-POLY1305,ECDHE-RSA-CHACHA20-POLY1305,ECDHE-RSA-AES128-SHA,ECDHE-RSA-AES256-SHA,AES128-GCM-SHA256,AES256-GCM-SHA384,AES128-SHA,AES256-SHA",
-        "--http2",
-        "--http2-no-server-push",
-        "--compressed",
+        "--curves",
+        "X25519MLKEM768:X25519:P-256:P-384",
+        "--http2-settings",
+        "1:65536;2:0;4:6291456;6:262144",
+        "--http2-window-update",
+        "15663105",
+        "--http2-stream-weight",
+        "256",
+        "--http2-stream-exclusive",
+        "1",
+        "--ech",
+        "GREASE",
         "--tlsv1.2",
         "--alps",
         "--tls-permute-extensions",
         "--cert-compression",
         "brotli",
         "-H",
-        `sec-ch-ua: "Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"`,
+        `sec-ch-ua: "Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"`,
         "-H",
         "sec-ch-ua-mobile: ?0",
         "-H",
-        "sec-ch-ua-platform: Windows",
+        "sec-ch-ua-platform: macOS",
         "-H",
         "Upgrade-Insecure-Requests: 1",
         "-H",
-        `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36`,
+        "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
         "-H",
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "-H",
         "Sec-Fetch-Site: none",
         "-H",
@@ -110,9 +120,11 @@ async function fetchHtml(url, signal) {
         "-H",
         "Sec-Fetch-Dest: document",
         "-H",
-        "Accept-Encoding: gzip, deflate, br",
+        "Accept-Encoding: gzip, deflate, br, zstd",
         "-H",
         "Accept-Language: en-US,en;q=0.9",
+        "-H",
+        "Priority: u=0, i",
         url,
       ];
 

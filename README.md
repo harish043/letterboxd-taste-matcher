@@ -17,9 +17,9 @@ Letterboxd sits behind Cloudflare, which serves a "Just a moment…" challenge t
 
 The platform is detected at **runtime** via `process.env.OS` (a runtime value — `process.platform` would be folded to the build machine's OS by the bundler). The Linux binary is bundled into the `/api/match` route via `outputFileTracingIncludes` in `next.config.ts`. Override the binary path with the `LETTERBOXD_CURL_BIN` env var if needed.
 
-> **Why a scraper VM?** Letterboxd's Cloudflare serves a JS-based "Just a moment…" challenge to **all** datacenter egress IPs — AWS (Vercel serverless) *and* Cloudflare Workers both get challenged, regardless of TLS fingerprint. The reliable fix is a small VM running the scraper service with egress routed through **Cloudflare WARP (1.1.1.1)**: WARP consumer egress uses Cloudflare's residential-grade IP ranges, which Letterboxd does not challenge. Vercel proxies `/api/match` to the VM via the `SCRAPER_URL` env var.
+> **Why a proxy?** Letterboxd's Cloudflare serves a JS-based "Just a moment…" challenge to **all** datacenter egress IPs — AWS (Vercel serverless), Cloudflare Workers, and even WARP tunnels all get challenged regardless of TLS fingerprint. The fix is a **residential proxy** (e.g. proxying.io, ScraperAPI, BrightData): the scraper routes every Letterboxd fetch through `SCRAPER_PROXY`, so egress comes from a residential IP that Letterboxd does not challenge. This works from Vercel directly — no VM needed.
 
-> **Note:** A Cloudflare Worker fetch relay (`workers/fetch-relay/`) was implemented and tested but **does not bypass the challenge** — Worker subrequests egress from datacenter IPs and receive the same 403. It remains in the repo as a reference but is not the recommended path.
+> **Note:** The `scraper-service/` (VM + WARP) and `workers/fetch-relay/` (Cloudflare Worker) approaches were both implemented and tested but **do not bypass the challenge**. They remain in the repo as reference. The `SCRAPER_PROXY` residential-proxy path is the working solution.
 
 ## Getting started (local dev)
 
@@ -54,53 +54,26 @@ Returns `{ username, topFour, matchCount, matches, scanned }`.
 
 When `SCRAPER_FETCH_URL` is set (Vercel env var), the scraper routes every Letterboxd fetch through the Cloudflare Worker relay instead of scraping from the serverless function.
 
-## Deploying the scraper VM (recommended)
+## Production setup (Vercel + residential proxy)
 
-Create a Debian **e2-micro** instance (1 vCPU / 1 GB, free tier), then from an SSH session run:
-
-```bash
-cd /opt
-git clone https://github.com/harish043/letterboxd-taste-matcher.git
-cd letterboxd-taste-matcher
-sudo bash scraper-service/provision.sh
-```
-
-`provision.sh`:
-
-1. Installs Node.js 20, Cloudflare WARP (`cloudflare-warp`), and `ufw`
-2. Registers + connects WARP in **proxy mode** (`127.0.0.1:40000`) so all scraper egress uses Cloudflare's residential-grade IP ranges
-3. Runs `npm ci`, writes `scraper-service/.env`, and installs the `letterboxd-scraper` systemd service on port 8080
-4. Opens firewall port 8080
-
-**Before you go live, change the token:**
-
-```bash
-sudo nano /opt/letterboxd-taste-matcher/scraper-service/.env
-# SCRAPER_TOKEN=your_strong_token
-sudo systemctl restart letterboxd-scraper
-```
-
-Test the service (this is the WARP validation point — it must return matches, not a challenge):
-
-```bash
-curl http://localhost:8080/health
-curl -X POST http://localhost:8080/match \
-  -H 'Content-Type: application/json' \
-  -H 'Authorization: Bearer your_strong_token' \
-  -d '{"username":"dave","maxPagesPerFilm":1,"delayMs":0}'
-```
-
-### Point Vercel at the VM
-
-In the Vercel project, set two Production env vars:
+No VM needed. Set these Production env vars in the Vercel project (Settings → Environment Variables):
 
 ```
-SCRAPER_URL=http://<vm-external-ip>:8080
-SCRAPER_TOKEN=your_strong_token
+SCRAPER_PROXY=http://USER:PASSWORD@proxy.proxying.io:8080
 ```
 
-`/api/match` will then proxy scraping to the VM. A domain with TLS (e.g. via Cloudflare) is recommended so the token isn't sent in plaintext — or use a GCP Cloud Run / internal LB in front.
+`/api/match` then routes every Letterboxd fetch through the residential proxy, whose IP passes Cloudflare.
 
-### If WARP also gets challenged
+Notes:
+- If you use proxying.io, you can add options by appending `_quality-high` (or `_country-xx`) to the password: `http://user:pass_quality-high@proxy.proxying.io:8080`.
+- For higher rate limits or more concurrent scans, a paid plan (or a proxy with sticky sessions) helps — some providers rotate IPs per request, which can occasionally re-trigger Cloudflare.
+- The `SCRAPER_TOKEN`/`SCRAPER_URL` env vars are only needed for the (now optional) scraper VM setup below.
 
-If `POST /match` on the VM returns a "Just a moment" error, WARP egress is challenged too. The fallback is a **residential proxy service** (ScraperAPI, BrightData, Zyte) — set `SCRAPER_PROXY` in `scraper-service/.env` to the proxy URL and restart. That reliably passes Cloudflare.
+## Optional: scraper VM (not required)
+
+The repo includes a self-hosted fallback in `scraper-service/` (a Debian/Ubuntu e2-micro running the scraper behind Cloudflare WARP). It is **not needed** if you use `SCRAPER_PROXY` on Vercel — keep it only if you prefer to run the scraper on your own infrastructure:
+
+1. Create an Ubuntu 24.04 e2-micro instance.
+2. `sudo bash scraper-service/provision.sh` — installs Node, WARP (proxy mode), npm deps, and a systemd service on port 8080.
+3. Set `SCRAPER_TOKEN` and `SCRAPER_PROXY` in `scraper-service/.env`.
+4. Point Vercel at it: `SCRAPER_URL=http://<vm-ip>:8080` + `SCRAPER_TOKEN`.

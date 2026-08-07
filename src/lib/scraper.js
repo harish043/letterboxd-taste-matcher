@@ -91,7 +91,7 @@ export async function getTopFourSlugs(username, { signal } = {}) {
 
   if (slugs.length === 0) {
     throw new Error(
-      `No favorites section found for username "${username}" (profile may not exist or has no Top 4).`
+      `No favorites section found for username "${username}" (profile may not exist or has no Top 4). Received ${html.length} bytes, starts: "${html.slice(0, 120)}"`
     );
   }
   return slugs;

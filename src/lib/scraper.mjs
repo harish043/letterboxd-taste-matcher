@@ -12,6 +12,22 @@ const USER_AGENT =
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Stable per-process id used to pin a sticky proxy session across requests.
+const STICKY_SESSION_ID = Date.now().toString(36);
+
+// proxying.io sticky sessions: append `_session-<id>` to the password so the
+// proxy keeps the same egress IP for the lifetime of this process. If the URL
+// already carries a session option (or SCRAPER_PROXY is unset/not proxying.io),
+// leave it untouched.
+function applyStickySession(proxyUrl) {
+  if (!proxyUrl) return proxyUrl;
+  if (/_session-[A-Za-z0-9]+/.test(proxyUrl)) return proxyUrl;
+  const match = proxyUrl.match(/^(https?:\/\/)([^:/@]+):([^@]*)@(.*)$/);
+  if (!match) return proxyUrl;
+  const [, scheme, user, pass, host] = match;
+  return `${scheme}${user}:${pass}_session-${STICKY_SESSION_ID}@${host}`;
+}
+
 // Letterboxd sits behind Cloudflare, which fingerprints Node's OpenSSL TLS
 // stack (JA3/JA4) and serves a "Just a moment..." challenge to it. Native
 // `fetch` is blocked on most networks. We therefore fetch through a curl-style
@@ -88,7 +104,13 @@ async function fetchHtml(url, signal) {
   // BoringSSL flags can break the HTTPS CONNECT tunnel intermittently). Node's
   // native fetch is NOT usable here: undici's TLS fingerprint is detected even
   // through a residential proxy (403), whereas curl passes (200).
-  const proxy = process.env.SCRAPER_PROXY;
+  //
+  // Proxying.io rotates the egress IP on every request by default; rotating IPs
+  // re-trigger Cloudflare challenges. Pin a sticky session so the whole scan
+  // uses one trusted IP. `_session-<id>` is the proxying.io sticky-session
+  // suffix. The session id is stable for the lifetime of this process, so all
+  // requests in a scan share the same IP.
+  const proxy = applyStickySession(process.env.SCRAPER_PROXY);
 
   const browserHeaders = [
     "-H",
@@ -296,51 +318,55 @@ export async function getSharedFans(
   slugs,
   { maxPagesPerFilm = 5, delayMs = 1500, signal } = {}
 ) {
-  const perFilm = {};
+  const perFilm = Object.fromEntries(
+    slugs.map((slug) => [
+      slug,
+      { count: null, scannedPages: 0, done: false, fans: new Set() },
+    ])
+  );
 
-  for (const slug of slugs) {
-    const all = new Set();
-    let count = null;
-    let page = 1;
-    let hasNext = true;
-    while (hasNext && page <= maxPagesPerFilm) {
-      const { usernames, hasNext: next, count: pageCount } =
-        await fetchFansPage(slug, page, { signal });
-      for (const username of usernames) all.add(username);
-      if (pageCount != null) count = pageCount;
-      hasNext = next;
-      if (hasNext && page < maxPagesPerFilm && delayMs > 0) {
-        await sleep(delayMs);
-      }
-      page += 1;
-    }
+  // Wave-parallel fetch: each iteration fetches the next page of every
+  // not-yet-finished film concurrently, then advances. This turns N sequential
+  // proxy round-trips (~3s each) into at most maxPagesPerFilm waves.
+  let page = 1;
+  while (page <= maxPagesPerFilm) {
+    const active = slugs.filter((slug) => !perFilm[slug].done);
+    if (active.length === 0) break;
 
-    perFilm[slug] = {
-      count,
-      scannedPages: page - 1,
-      fans: [...all],
-    };
+    await Promise.all(
+      active.map(async (slug) => {
+        const { usernames, hasNext, count } = await fetchFansPage(slug, page, {
+          signal,
+        });
+        for (const username of usernames) perFilm[slug].fans.add(username);
+        if (count != null) perFilm[slug].count = count;
+        perFilm[slug].scannedPages = page;
+        if (!hasNext) perFilm[slug].done = true;
+      })
+    );
+
+    page += 1;
+    if (page <= maxPagesPerFilm && delayMs > 0) await sleep(delayMs);
   }
 
+  const clean = Object.fromEntries(
+    slugs.map((slug) => [
+      slug,
+      {
+        count: perFilm[slug].count,
+        scannedPages: perFilm[slug].scannedPages,
+        fans: [...perFilm[slug].fans],
+      },
+    ])
+  );
+
   const shared = slugs.length
-    ? [...perFilm[slugs[0]].fans].filter((username) =>
-        slugs.every((slug) => perFilm[slug].fans.includes(username))
+    ? clean[slugs[0]].fans.filter((username) =>
+        slugs.every((slug) => clean[slug].fans.includes(username))
       )
     : [];
 
-  return {
-    shared,
-    perFilm: Object.fromEntries(
-      slugs.map((slug) => [
-        slug,
-        {
-          count: perFilm[slug].count,
-          scannedPages: perFilm[slug].scannedPages,
-          fans: perFilm[slug].fans,
-        },
-      ])
-    ),
-  };
+  return { shared, perFilm: clean };
 }
 
 /**

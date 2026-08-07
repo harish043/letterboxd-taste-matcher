@@ -24,7 +24,7 @@ type MatchResult = {
 
 type Status = "idle" | "loading" | "success" | "error";
 
-const DEFAULT_OPTIONS = { maxPagesPerFilm: 3, delayMs: 300 };
+const DEFAULT_OPTIONS = { maxPagesPerFilm: 1, delayMs: 0 };
 
 const FILTER_OPTIONS = [
   { value: 1, label: "1+ Matches" },

@@ -60,6 +60,28 @@ function resolveCurlBinary() {
  * the preset.
  */
 async function fetchHtml(url, signal) {
+  // When SCRAPER_FETCH_URL is set, route fetches through a Cloudflare Worker
+  // relay (workers/fetch-relay). The worker's egress is a Cloudflare IP, which
+  // Letterboxd's Cloudflare does not challenge — the reliable path for Vercel.
+  // Falls back to the platform curl transport otherwise (local dev).
+  const relayUrl = process.env.SCRAPER_FETCH_URL;
+  if (relayUrl) {
+    const relay = new URL(
+      relayUrl.endsWith("/fetch") ? relayUrl : `${relayUrl.replace(/\/$/, "")}/fetch`
+    );
+    relay.searchParams.set("url", url);
+    const res = await fetch(relay, {
+      headers: process.env.SCRAPER_TOKEN
+        ? { Authorization: `Bearer ${process.env.SCRAPER_TOKEN}` }
+        : {},
+      signal,
+    });
+    if (!res.ok) {
+      throw new Error(`Relay fetch to ${url} failed with status ${res.status}`);
+    }
+    return res.text();
+  }
+
   const isWindows = process.env.OS === "Windows_NT";
 
   // When running on a VM, outbound traffic can be routed through a proxy

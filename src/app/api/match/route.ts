@@ -129,9 +129,21 @@ export async function POST(request: Request) {
       } catch (e) {
         plainFetchResult = `error=${e instanceof Error ? e.message : "unknown"}`;
       }
+
+      let jsonEndpointResult = "n/a";
+      try {
+        const r = await fetch("https://letterboxd.com/film/pulp-fiction/json/", {
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+          signal: AbortSignal.timeout(15000),
+        });
+        const body = await r.text();
+        jsonEndpointResult = `status=${r.status} challenged=${body.includes("Just a moment")} bytes=${body.length}`;
+      } catch (e) {
+        jsonEndpointResult = `error=${e instanceof Error ? e.message : "unknown"}`;
+      }
       return Response.json(
         {
-          error: `Username "${username}" not found or has no Top 4. Debug: ${message} [egress=${egressIp}] [plainFetch=${plainFetchResult}]`,
+          error: `Username "${username}" not found or has no Top 4. Debug: ${message} [egress=${egressIp}] [plainFetch=${plainFetchResult}] [jsonEndpoint=${jsonEndpointResult}]`,
         },
         { status: 404 }
       );

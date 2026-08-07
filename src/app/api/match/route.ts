@@ -1,4 +1,13 @@
-import { getTopFourSlugs, getSharedFans, buildMatchResult } from "@/lib/scraper.mjs";
+import {
+  getTopFourSlugs,
+  getSharedFans,
+  buildMatchResult,
+  LetterboxdNotFoundError,
+  TooFewFavoritesError,
+  LetterboxdForbiddenError,
+  ProxyTimeoutError,
+  ProxyError,
+} from "@/lib/scraper.mjs";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -57,10 +66,9 @@ export async function POST(request: Request) {
       ? Math.min(Math.floor(body.minMatches), 4)
       : 1;
 
-  // In production the scraping runs on a dedicated VM (scraper-service/) whose
-  // residential/datacenter egress isn't blocked by Letterboxd's Cloudflare.
-  // When SCRAPER_URL is set, proxy the request there instead of scraping from
-  // the serverless function (whose datacenter IPs are always challenged).
+  // Optional: delegate scraping to a self-hosted scraper service (SCRAPER_URL).
+  // When unset, this function scrapes directly through the residential proxy
+  // configured in SCRAPER_PROXY.
   const scraperUrl = process.env.SCRAPER_URL;
   if (scraperUrl) {
     try {
@@ -111,16 +119,49 @@ export async function POST(request: Request) {
       scanned,
     });
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Unknown scraping error.";
-
-    if (message.includes("No favorites section")) {
+    if (error instanceof LetterboxdNotFoundError) {
       return Response.json(
-        { error: `Username "${username}" not found or has no Top 4.` },
+        {
+          error: `We couldn't find the Letterboxd profile "${username}". Double-check the username and try again.`,
+        },
         { status: 404 }
       );
     }
 
+    if (error instanceof TooFewFavoritesError) {
+      return Response.json(
+        {
+          error: `The profile "${username}" needs at least 4 favorite films on Letterboxd to find matches (it currently has fewer). Add favorites and try again.`,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (error instanceof LetterboxdForbiddenError) {
+      return Response.json(
+        {
+          error: `The profile "${username}" is private or inaccessible. Make sure the profile is public.`,
+        },
+        { status: 403 }
+      );
+    }
+
+    if (error instanceof ProxyTimeoutError) {
+      return Response.json(
+        { error: "The match request timed out. Please try again." },
+        { status: 504 }
+      );
+    }
+
+    if (error instanceof ProxyError) {
+      return Response.json(
+        { error: "The proxy could not complete the request. Please try again." },
+        { status: 502 }
+      );
+    }
+
+    const message =
+      error instanceof Error ? error.message : "Unknown scraping error.";
     return Response.json({ error: message }, { status: 502 });
   }
 }

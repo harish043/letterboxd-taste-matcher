@@ -191,7 +191,8 @@ async function fetchHtml(url, signal) {
       ];
 
   // Retry transient tunnel failures (e.g. curl-impersonate BoringSSL
-  // "BAD_DECRYPT" through an HTTP proxy) a few times.
+  // "BAD_DECRYPT" through an HTTP proxy) and Cloudflare challenge pages
+  // (sticky-session IPs can occasionally be flagged) a few times.
   let lastError;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -199,6 +200,16 @@ async function fetchHtml(url, signal) {
         maxBuffer: 10 * 1024 * 1024,
         signal,
       });
+      // A 403 challenge page comes back as a successful curl run with a
+      // "Just a moment..." body. Treat it as retryable.
+      if (result.stdout.includes("Just a moment")) {
+        lastError = new Error(`Cloudflare challenge for ${url}`);
+        if (attempt < 2) {
+          await sleep(600);
+          continue;
+        }
+        throw lastError;
+      }
       return result.stdout;
     } catch (error) {
       lastError = error;
@@ -311,12 +322,13 @@ async function fetchFansPage(slug, page, { signal } = {}) {
  * @param {object} [options]
  * @param {number} [options.maxPagesPerFilm=5] Max fans pages to scan per film.
  * @param {number} [options.delayMs=1500] Politeness delay between requests.
+ * @param {number} [options.concurrency=8] Max concurrent proxy requests.
  * @param {AbortSignal} [options.signal]
  * @returns {Promise<{ shared: string[], perFilm: Record<string, { count: number|null, scannedPages: number, fans: string[] }> }>}
  */
 export async function getSharedFans(
   slugs,
-  { maxPagesPerFilm = 5, delayMs = 1500, signal } = {}
+  { maxPagesPerFilm = 5, delayMs = 1500, signal, concurrency = 8 } = {}
 ) {
   const perFilm = Object.fromEntries(
     slugs.map((slug) => [
@@ -325,29 +337,43 @@ export async function getSharedFans(
     ])
   );
 
-  // Wave-parallel fetch: each iteration fetches the next page of every
-  // not-yet-finished film concurrently, then advances. This turns N sequential
-  // proxy round-trips (~3s each) into at most maxPagesPerFilm waves.
-  let page = 1;
-  while (page <= maxPagesPerFilm) {
-    const active = slugs.filter((slug) => !perFilm[slug].done);
-    if (active.length === 0) break;
+  // Worker-pool fetch: schedule every (film, page) fetch up front and run them
+  // through a bounded pool (default 8 concurrent) so the residential proxy is
+  // kept saturated. This is much faster than strict per-page waves, which stall
+  // waiting for the slowest film each round.
+  const tasks = [];
+  for (const slug of slugs) {
+    for (let page = 1; page <= maxPagesPerFilm; page++) {
+      tasks.push({ slug, page });
+    }
+  }
 
-    await Promise.all(
-      active.map(async (slug) => {
+  let cursor = 0;
+  async function worker() {
+    while (cursor < tasks.length) {
+      const task = tasks[cursor++];
+      const { slug, page } = task;
+      if (perFilm[slug].done) continue; // skip once the film has no more pages
+      try {
         const { usernames, hasNext, count } = await fetchFansPage(slug, page, {
           signal,
         });
+        if (perFilm[slug].done) continue; // lost a race with page 1's hasNext
         for (const username of usernames) perFilm[slug].fans.add(username);
         if (count != null) perFilm[slug].count = count;
-        perFilm[slug].scannedPages = page;
+        perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, page);
         if (!hasNext) perFilm[slug].done = true;
-      })
-    );
-
-    page += 1;
-    if (page <= maxPagesPerFilm && delayMs > 0) await sleep(delayMs);
+      } catch {
+        // Skip failures; the film's other pages still get processed. Retries
+        // for transient proxy errors happen inside fetchHtml.
+      }
+      if (delayMs > 0) await sleep(delayMs);
+    }
   }
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, tasks.length || 1) }, worker)
+  );
 
   const clean = Object.fromEntries(
     slugs.map((slug) => [

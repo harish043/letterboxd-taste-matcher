@@ -4,7 +4,9 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const USERNAME_REGEX = /^[a-zA-Z0-9_]{1,30}$/;
-const MAX_PAGES_PER_FILM = 3;
+const MAX_PAGES_PER_FILM = 20;
+const DEFAULT_PAGES_PER_FILM = 15;
+const DEFAULT_CONCURRENCY = 8;
 
 export async function POST(request: Request) {
   let body: {
@@ -45,7 +47,7 @@ export async function POST(request: Request) {
   const maxPagesPerFilm =
     typeof body.maxPagesPerFilm === "number" && body.maxPagesPerFilm > 0
       ? Math.min(Math.floor(body.maxPagesPerFilm), MAX_PAGES_PER_FILM)
-      : MAX_PAGES_PER_FILM;
+      : DEFAULT_PAGES_PER_FILM;
   const delayMs =
     typeof body.delayMs === "number" && body.delayMs >= 0
       ? Math.min(body.delayMs, 10000)
@@ -75,6 +77,7 @@ export async function POST(request: Request) {
           maxPagesPerFilm,
           delayMs,
           minMatches,
+          concurrency: DEFAULT_CONCURRENCY,
         }),
         signal: AbortSignal.timeout(55000),
       });
@@ -95,6 +98,7 @@ export async function POST(request: Request) {
     const { perFilm } = await getSharedFans(topFour, {
       maxPagesPerFilm,
       delayMs,
+      concurrency: DEFAULT_CONCURRENCY,
     });
 
     const { matches, scanned } = buildMatchResult(topFour, perFilm, minMatches);

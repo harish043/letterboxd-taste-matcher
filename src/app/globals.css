@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #0a0c0e;
+  --surface: #121417;
+  --raise: #1a1e24;
+  --bone: #f2ede3;
+  --slate: #8e98a3;
+  --steel: #2a313a;
+  --amber: #e9a13b;
+  --amber-glow: rgba(233, 161, 59, 0.14);
+}
+
+@theme inline {
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-raise: var(--raise);
+  --color-bone: var(--bone);
+  --color-slate: var(--slate);
+  --color-steel: var(--steel);
+  --color-amber: var(--amber);
+  --color-amber-glow: var(--amber-glow);
+
+  --font-display: var(--font-bricolage);
+  --font-body: var(--font-instrument);
+  --font-mono: var(--font-plex);
+}
+
+body {
+  background: var(--ink);
+  color: var(--bone);
+  font-family: var(--font-instrument);
+}

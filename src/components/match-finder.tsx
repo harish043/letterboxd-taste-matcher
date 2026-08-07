@@ -27,10 +27,10 @@ type Status = "idle" | "loading" | "success" | "error";
 const DEFAULT_OPTIONS = { maxPagesPerFilm: 1, delayMs: 0 };
 
 const FILTER_OPTIONS = [
-  { value: 1, label: "1+ Matches" },
   { value: 2, label: "2+ Matches" },
   { value: 3, label: "3+ Matches" },
   { value: 4, label: "4/4 Only" },
+  { value: 1, label: "All (1+)" },
 ];
 
 export default function MatchFinder() {
@@ -132,7 +132,7 @@ export default function MatchFinder() {
 }
 
 function Results({ result }: { result: MatchResult }) {
-  const [minMatchFilter, setMinMatchFilter] = useState(1);
+  const [minMatchFilter, setMinMatchFilter] = useState(2);
   const filteredMatches = result.matches.filter(
     (match) => match.sharedFilms.length >= minMatchFilter
   );
@@ -141,8 +141,11 @@ function Results({ result }: { result: MatchResult }) {
     <div className="mt-14 w-full max-w-5xl">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="font-display text-3xl font-bold text-bone">
-          {result.matchCount}{" "}
-          {result.matchCount === 1 ? "profile" : "profiles"} share your taste
+          {filteredMatches.length}{" "}
+          {filteredMatches.length === 1 ? "profile" : "profiles"} share{" "}
+          {minMatchFilter >= 2
+            ? `${minMatchFilter}+ of your Top 4`
+            : "your taste"}
         </h2>
         <p className="font-mono text-xs uppercase tracking-[0.25em] text-slate">
           {result.username}
@@ -186,8 +189,26 @@ function Results({ result }: { result: MatchResult }) {
 
           {filteredMatches.length === 0 ? (
             <p className="mt-10 text-sm leading-7 text-slate">
-              No matches found for {minMatchFilter}/4 films. Try lowering your
-              filter to 2+ or 3+.
+              {minMatchFilter >= 2 ? (
+                <>
+                  No profiles share {minMatchFilter}+ of this user&rsquo;s Top 4
+                  in the scanned fans. Strong taste overlap is rare &mdash; try{" "}
+                  <button
+                    type="button"
+                    onClick={() => setMinMatchFilter(1)}
+                    className="font-medium text-amber underline underline-offset-2 hover:text-bone"
+                  >
+                    lowering to 1+ films
+                  </button>
+                  , or a more popular profile.
+                </>
+              ) : (
+                <>
+                  No overlapping fans yet. The scan only covers the first few
+                  pages of each film&rsquo;s fan list &mdash; try a more popular
+                  profile.
+                </>
+              )}
             </p>
           ) : (
             <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">

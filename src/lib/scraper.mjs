@@ -84,23 +84,35 @@ async function fetchHtml(url, signal) {
 
   const isWindows = process.env.OS === "Windows_NT";
 
-  // When running on a VM, outbound traffic can be routed through a proxy
-  // (e.g. Cloudflare WARP at 127.0.0.1:40000) so Letterboxd's Cloudflare sees
-  // a trusted IP instead of a datacenter egress IP.
+  // When SCRAPER_PROXY is set (residential proxy on Vercel), the proxy's egress
+  // IP is what passes Letterboxd's Cloudflare — TLS impersonation is not needed
+  // and its flags (--ech/--alps/--tls-permute-extensions) can break the HTTPS
+  // CONNECT tunnel. Use a plain browser-identical curl through the proxy.
   const proxy = process.env.SCRAPER_PROXY;
 
-  const curlArgs = isWindows
+  const browserHeaders = [
+    "-H",
+    `User-Agent: ${USER_AGENT}`,
+    "-H",
+    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "-H",
+    "Accept-Language: en-US,en;q=0.9",
+    "-H",
+    "Sec-Fetch-Site: none",
+    "-H",
+    "Sec-Fetch-Mode: navigate",
+    "-H",
+    "Sec-Fetch-Dest: document",
+  ];
+
+  const curlArgs = isWindows || proxy
     ? [
         "-sSL",
         "--http1.1",
         "--max-time",
         "30",
-        "-H",
-        `User-Agent: ${USER_AGENT}`,
-        "-H",
-        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "-H",
-        "Accept-Language: en-US,en;q=0.9",
+        ...(proxy ? ["--proxy", proxy] : []),
+        ...browserHeaders,
         url,
       ]
     : [
@@ -108,7 +120,6 @@ async function fetchHtml(url, signal) {
         "--max-time",
         "30",
         "--compressed",
-        ...(proxy ? ["--proxy", proxy] : []),
         "--ciphers",
         "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384,ECDHE-ECDSA-CHACHA20-POLY1305,ECDHE-RSA-CHACHA20-POLY1305,ECDHE-RSA-AES128-SHA,ECDHE-RSA-AES256-SHA,AES128-GCM-SHA256,AES256-GCM-SHA384,AES128-SHA,AES256-SHA",
         "--curves",

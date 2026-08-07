@@ -1,0 +1,20 @@
+[Unit]
+Description=Letterboxd taste matcher scraper service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/letterboxd-taste-matcher
+ExecStart=/usr/bin/node /opt/letterboxd-taste-matcher/scraper-service/server.mjs
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=8080
+EnvironmentFile=/opt/letterboxd-taste-matcher/scraper-service/.env
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -62,6 +62,11 @@ function resolveCurlBinary() {
 async function fetchHtml(url, signal) {
   const isWindows = process.env.OS === "Windows_NT";
 
+  // When running on a VM, outbound traffic can be routed through a proxy
+  // (e.g. Cloudflare WARP at 127.0.0.1:40000) so Letterboxd's Cloudflare sees
+  // a trusted IP instead of a datacenter egress IP.
+  const proxy = process.env.SCRAPER_PROXY;
+
   const curlArgs = isWindows
     ? [
         "-sSL",
@@ -81,6 +86,7 @@ async function fetchHtml(url, signal) {
         "--max-time",
         "30",
         "--compressed",
+        ...(proxy ? ["--proxy", proxy] : []),
         "--ciphers",
         "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384,ECDHE-ECDSA-CHACHA20-POLY1305,ECDHE-RSA-CHACHA20-POLY1305,ECDHE-RSA-AES128-SHA,ECDHE-RSA-AES256-SHA,AES128-GCM-SHA256,AES256-GCM-SHA384,AES128-SHA,AES256-SHA",
         "--curves",
@@ -291,4 +297,46 @@ export async function getSharedFans(
       ])
     ),
   };
+}
+
+/**
+ * Build the match result from a per-film fan scan: intersect fan lists, rank
+ * by shared-film percentage, filter by minimum matches.
+ *
+ * @param {string[]} topFour The user's Top 4 film slugs.
+ * @param {Record<string, { count: number|null, scannedPages: number, fans: string[] }>} perFilm
+ * @param {number} [minMatches=1] Minimum shared films for a match.
+ * @returns {{ matches: Array<{ username: string, sharedFilms: string[], percentage: number }>, scanned: Record<string, { totalFans: number|null, scannedPages: number }> }}
+ */
+export function buildMatchResult(topFour, perFilm, minMatches = 1) {
+  const seen = new Map();
+
+  for (const [slug, { fans }] of Object.entries(perFilm)) {
+    for (const fan of fans) {
+      const films = seen.get(fan) ?? [];
+      films.push(slug);
+      seen.set(fan, films);
+    }
+  }
+
+  const matches = [...seen.entries()]
+    .map(([username, sharedFilms]) => ({
+      username,
+      sharedFilms,
+      percentage: Math.round((sharedFilms.length / topFour.length) * 100),
+    }))
+    .filter((match) => match.sharedFilms.length >= minMatches)
+    .sort(
+      (a, b) =>
+        b.percentage - a.percentage || a.username.localeCompare(b.username)
+    );
+
+  const scanned = Object.fromEntries(
+    Object.entries(perFilm).map(([slug, { count, scannedPages }]) => [
+      slug,
+      { totalFans: count, scannedPages },
+    ])
+  );
+
+  return { matches, scanned };
 }

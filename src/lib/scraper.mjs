@@ -303,7 +303,7 @@ async function fetchFansPage(slug, page, { attempts = 1 } = {}) {
  * @param {number} [options.maxPagesPerFilm=5] Max fans pages to scan per film.
  * @param {number} [options.delayMs=1500] Politeness delay between requests.
  * @param {number} [options.concurrency=8] Max concurrent proxy requests.
- * @returns {Promise<{ shared: string[], perFilm: Record<string, { count: number|null, scannedPages: number, fans: string[] }> }>}
+ * @returns {Promise<{ shared: string[], perFilm: Record<string, { count: number|null, pagesFetched: number, scannedPages: number, fans: string[] }> }>}
  */
 export async function getSharedFans(
   slugs,
@@ -312,7 +312,13 @@ export async function getSharedFans(
   const perFilm = Object.fromEntries(
     slugs.map((slug) => [
       slug,
-      { count: null, totalPages: null, scannedPages: 0, fans: new Set() },
+      {
+        count: null,
+        totalPages: null,
+        pagesFetched: 0,
+        scannedPages: 0,
+        fans: new Set(),
+      },
     ])
   );
 
@@ -341,6 +347,10 @@ export async function getSharedFans(
   for (const { slug, usernames, count } of firstPageResults) {
     for (const username of usernames) perFilm[slug].fans.add(username);
     if (count != null) perFilm[slug].count = count;
+    if (usernames.length > 0) {
+      // Count page 1 as fetched only if it actually returned fans.
+      perFilm[slug].pagesFetched += 1;
+    }
     perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, 1);
 
     if (count != null) {
@@ -375,6 +385,7 @@ export async function getSharedFans(
       try {
         const { usernames } = await fetchFansPage(slug, page, { attempts: 1 });
         for (const username of usernames) perFilm[slug].fans.add(username);
+        if (usernames.length > 0) perFilm[slug].pagesFetched += 1;
         perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, page);
       } catch {
         // Skip individual page failures; a single dropped page is tolerable.
@@ -392,6 +403,7 @@ export async function getSharedFans(
       slug,
       {
         count: perFilm[slug].count,
+        pagesFetched: perFilm[slug].pagesFetched,
         scannedPages: perFilm[slug].scannedPages,
         fans: [...perFilm[slug].fans],
       },
@@ -412,9 +424,9 @@ export async function getSharedFans(
  * by shared-film percentage, filter by minimum matches.
  *
  * @param {string[]} topFour The user's Top 4 film slugs.
- * @param {Record<string, { count: number|null, scannedPages: number, fans: string[] }>} perFilm
+ * @param {Record<string, { count: number|null, pagesFetched: number, scannedPages: number, fans: string[] }>} perFilm
  * @param {number} [minMatches=1] Minimum shared films for a match.
- * @returns {{ matches: Array<{ username: string, sharedFilms: string[], percentage: number }>, scanned: Record<string, { totalFans: number|null, scannedPages: number }> }}
+ * @returns {{ matches: Array<{ username: string, sharedFilms: string[], percentage: number }>, scanned: Record<string, { totalFans: number|null, pagesFetched: number, scannedPages: number }> }}
  */
 export function buildMatchResult(topFour, perFilm, minMatches = 1) {
   const seen = new Map();
@@ -440,9 +452,9 @@ export function buildMatchResult(topFour, perFilm, minMatches = 1) {
     );
 
   const scanned = Object.fromEntries(
-    Object.entries(perFilm).map(([slug, { count, scannedPages }]) => [
+    Object.entries(perFilm).map(([slug, { count, pagesFetched, scannedPages }]) => [
       slug,
-      { totalFans: count, scannedPages },
+      { totalFans: count, pagesFetched, scannedPages },
     ])
   );
 

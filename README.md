@@ -2,9 +2,18 @@
 
 A Next.js app that finds Letterboxd users who share your taste. Enter a username, and it scans the fans of your Top 4 films to surface profiles whose favorites overlap with yours, ranked by match percentage.
 
+## Features
+
+- **Top 4 matching** — scans each of your four favorite films' fan lists and intersects them; every user found is someone who shares at least one film with you.
+- **Unbiased sampling** — Letterboxd sorts fan lists alphabetically by username, so scanning only the first pages would surface accounts starting with `0`–`b` and miss everyone else. The scanner instead **spreads its page budget evenly across each film's entire fan list** (capped at Letterboxd's 256-page limit).
+- **Match tiers** — filter results by shared-film count: 2+, 3+, 4/4 only, or all.
+- **Load more** — results render in batches of 24 to keep the page responsive even with thousands of 1+ matches.
+- **Transparent scan info** — each film shows its total fan count and exactly how many pages were actually fetched.
+
 ## How it works
 
-1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** film slugs.2. For each film it scans the film's **fans** pages (a fan = member with that film in their Top 4).
+1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** film slugs.
+2. For each film it fetches page 1 (to learn the fan count) and then spreads the remaining requests evenly across the fan list — a fan is a member with that film in their Top 4.
 3. Users who appear across multiple fan lists share films with you — the more films, the higher the match percentage.
 4. `POST /api/match` returns the intersection; the UI lets you filter by minimum shared films.
 
@@ -46,13 +55,11 @@ Open [http://localhost:3000](http://localhost:3000).
 ```
 
 - `username` (required) — Letterboxd username, `/^[a-zA-Z0-9_]{1,30}$/`
-- `maxPagesPerFilm` (optional, capped at 3) — fans pages scanned per film
+- `maxPagesPerFilm` (optional, default 15, capped at 20) — fans page requests per film, spread evenly across the fan list
 - `delayMs` (optional, capped at 10000) — politeness delay between requests
 - `minMatches` (optional, 1–4) — minimum shared films for a match
 
-Returns `{ username, topFour, matchCount, matches, scanned }`.
-
-When `SCRAPER_FETCH_URL` is set (Vercel env var), the scraper routes every Letterboxd fetch through the Cloudflare Worker relay instead of scraping from the serverless function.
+Returns `{ username, topFour, matchCount, matches, scanned }`, where each entry of `scanned` is `{ totalFans, pagesFetched, scannedPages }` — `pagesFetched` is the number of pages that actually returned fans (a few can fail on a slow proxy), and `scannedPages` is the deepest page number reached.
 
 ## Production setup (Vercel + residential proxy)
 

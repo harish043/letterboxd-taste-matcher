@@ -107,8 +107,18 @@ export async function POST(request: Request) {
       error instanceof Error ? error.message : "Unknown scraping error.";
 
     if (message.includes("No favorites section")) {
+      let egressIp = "unknown";
+      try {
+        const r = await fetch("https://api.ipify.org?format=json", {
+          signal: AbortSignal.timeout(5000),
+        });
+        const j = await r.json();
+        egressIp = j?.ip ?? "unknown";
+      } catch {
+        // best-effort
+      }
       return Response.json(
-        { error: `Username "${username}" not found or has no Top 4. Debug: ${message}` },
+        { error: `Username "${username}" not found or has no Top 4. Debug: ${message} [egress=${egressIp}]` },
         { status: 404 }
       );
     }

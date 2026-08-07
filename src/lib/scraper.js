@@ -51,21 +51,70 @@ function resolveCurlBinary() {
 /**
  * Fetch a URL's HTML using the platform-appropriate curl binary so Cloudflare
  * doesn't challenge the request.
+ *
+ * On Linux the bundled curl-impersonate binary must be given the full Chrome
+ * preset (cipher suite, HTTP/2, header order) — the binary alone isn't enough;
+ * Cloudflare fingerprints the TLS/HTTP2 negotiation, which is exactly what the
+ * preset provides. On Windows the stock curl.exe (Schannel TLS) passes without
+ * the preset.
  */
 async function fetchHtml(url, signal) {
-  const curlArgs = [
-    "-sSL",
-    "--http1.1",
-    "--max-time",
-    "30",
-    "-H",
-    `User-Agent: ${USER_AGENT}`,
-    "-H",
-    "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "-H",
-    "Accept-Language: en-US,en;q=0.9",
-    url,
-  ];
+  const isWindows = process.env.OS === "Windows_NT";
+
+  const curlArgs = isWindows
+    ? [
+        "-sSL",
+        "--http1.1",
+        "--max-time",
+        "30",
+        "-H",
+        `User-Agent: ${USER_AGENT}`,
+        "-H",
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "-H",
+        "Accept-Language: en-US,en;q=0.9",
+        url,
+      ]
+    : [
+        "-sSL",
+        "--max-time",
+        "30",
+        "--ciphers",
+        "TLS_AES_128_GCM_SHA256,TLS_AES_256_GCM_SHA384,TLS_CHACHA20_POLY1305_SHA256,ECDHE-ECDSA-AES128-GCM-SHA256,ECDHE-RSA-AES128-GCM-SHA256,ECDHE-ECDSA-AES256-GCM-SHA384,ECDHE-RSA-AES256-GCM-SHA384,ECDHE-ECDSA-CHACHA20-POLY1305,ECDHE-RSA-CHACHA20-POLY1305,ECDHE-RSA-AES128-SHA,ECDHE-RSA-AES256-SHA,AES128-GCM-SHA256,AES256-GCM-SHA384,AES128-SHA,AES256-SHA",
+        "--http2",
+        "--http2-no-server-push",
+        "--compressed",
+        "--tlsv1.2",
+        "--alps",
+        "--tls-permute-extensions",
+        "--cert-compression",
+        "brotli",
+        "-H",
+        `sec-ch-ua: "Chromium";v="110", "Not A(Brand";v="24", "Google Chrome";v="110"`,
+        "-H",
+        "sec-ch-ua-mobile: ?0",
+        "-H",
+        "sec-ch-ua-platform: Windows",
+        "-H",
+        "Upgrade-Insecure-Requests: 1",
+        "-H",
+        `User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36`,
+        "-H",
+        "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "-H",
+        "Sec-Fetch-Site: none",
+        "-H",
+        "Sec-Fetch-Mode: navigate",
+        "-H",
+        "Sec-Fetch-User: ?1",
+        "-H",
+        "Sec-Fetch-Dest: document",
+        "-H",
+        "Accept-Encoding: gzip, deflate, br",
+        "-H",
+        "Accept-Language: en-US,en;q=0.9",
+        url,
+      ];
 
   const result = await execFileP(resolveCurlBinary(), curlArgs, {
     maxBuffer: 10 * 1024 * 1024,

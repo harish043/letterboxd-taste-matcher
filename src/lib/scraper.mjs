@@ -297,36 +297,68 @@ export async function getSharedFans(
   const perFilm = Object.fromEntries(
     slugs.map((slug) => [
       slug,
-      { count: null, scannedPages: 0, done: false, fans: new Set() },
+      { count: null, totalPages: null, scannedPages: 0, fans: new Set() },
     ])
   );
 
-  // Worker-pool fetch: schedule every (film, page) fetch up front and run them
-  // through a bounded pool so the residential proxy is kept saturated without
-  // overloading it (which re-triggers Cloudflare challenges).
+  // Phase 1: fetch page 1 of every film first. It carries the fan count (in the
+  // sub-nav), which tells us the total number of pages for that film. The fans
+  // list is sorted alphabetically by username, so taking only the first pages
+  // would bias matches toward accounts starting with digits/a-f. We instead
+  // spread the page budget evenly across the entire list (phase 2).
+  const firstPageResults = await Promise.all(
+    slugs.map(async (slug) => {
+      try {
+        const { usernames, hasNext, count } = await fetchFansPage(slug, 1);
+        return { slug, usernames, hasNext, count };
+      } catch {
+        return { slug, usernames: [], hasNext: false, count: null };
+      }
+    })
+  );
+
   const tasks = [];
-  for (const slug of slugs) {
-    for (let page = 1; page <= maxPagesPerFilm; page++) {
+
+  for (const { slug, usernames, count } of firstPageResults) {
+    for (const username of usernames) perFilm[slug].fans.add(username);
+    if (count != null) perFilm[slug].count = count;
+    perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, 1);
+
+    if (count != null) {
+      // Letterboxd caps the fans list at 256 pages (6,400 fans) even for
+      // films with far more fans; pages beyond that return empty. Clamp so we
+      // never schedule unreachable pages.
+      perFilm[slug].totalPages = Math.min(256, Math.max(1, Math.ceil(count / 25)));
+    }
+
+    // Schedule the remaining pages as an even spread across the whole list so
+    // every part of the alphabet is represented. 25 fans per page.
+    const totalPages = perFilm[slug].totalPages ?? maxPagesPerFilm;
+    const remaining = Math.max(0, maxPagesPerFilm - 1);
+    for (let i = 1; i <= remaining; i++) {
+      let page;
+      if (totalPages <= 1) {
+        page = 1; // degenerate: single-page film; re-fetch is cheap and deduped
+      } else {
+        // Spread i over (1, totalPages] so the last page is included.
+        page = Math.round(1 + (i * (totalPages - 1)) / remaining);
+        page = Math.max(2, Math.min(totalPages, page));
+      }
       tasks.push({ slug, page });
     }
   }
 
+  // Phase 2: worker-pool fetch the spread pages.
   let cursor = 0;
   async function worker() {
     while (cursor < tasks.length) {
-      const task = tasks[cursor++];
-      const { slug, page } = task;
-      if (perFilm[slug].done) continue; // skip once the film has no more pages
+      const { slug, page } = tasks[cursor++];
       try {
-        const { usernames, hasNext, count } = await fetchFansPage(slug, page);
-        if (perFilm[slug].done) continue; // lost a race with page 1's hasNext
+        const { usernames } = await fetchFansPage(slug, page);
         for (const username of usernames) perFilm[slug].fans.add(username);
-        if (count != null) perFilm[slug].count = count;
         perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, page);
-        if (!hasNext) perFilm[slug].done = true;
       } catch {
-        // Skip individual page failures; the film's other pages still get
-        // processed. Per-page retries happen inside fetchHtml.
+        // Skip individual page failures; per-page retries happen in fetchHtml.
       }
       if (delayMs > 0) await sleep(delayMs);
     }

@@ -1,12 +1,13 @@
 # Letterboxd Taste Matcher
 
-A Next.js app that finds Letterboxd users who share your taste. Enter a username, and it scans the fans of your Top 4 films to surface profiles whose favorites overlap with yours, ranked by match percentage.
+A Next.js app that finds Letterboxd users who share your taste. Enter a username, and it finds users whose favorite films overlap with yours, ranked by match percentage — with exact shared films and activity stats on every match.
 
 ## How it works
 
-1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** film slugs.2. For each film it scans the film's **fans** pages (a fan = member with that film in their Top 4).
-3. Users who appear across multiple fan lists share films with you — the more films, the higher the match percentage.
-4. `POST /api/match` returns the intersection; the UI lets you filter by minimum shared films.
+1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** film slugs.
+2. It then queries **Letterboxd's own member-search engine** with `fan:<film>` operators OR'd together (e.g. `(fan:A+fan:B) OR (fan:A+fan:C) …`) — one request per match tier, which finds every member whose Top 4 overlaps with ≥2 of yours. This is far cheaper and more complete than scraping fan pages.
+3. Each match's profile is fetched to compute the **exact shared films**, **match percentage**, and **activity stats** (films logged this year, total films).
+4. `POST /api/match` returns the enriched matches; the UI filters by minimum shared films (2+ / 3+ / 4/4).
 
 ### Scraping transport
 
@@ -18,6 +19,8 @@ Letterboxd sits behind Cloudflare, which serves a "Just a moment…" challenge t
 Override the binary with the `LETTERBOXD_CURL_BIN` env var if the runtime lacks curl. No custom/native scraping packages are bundled.
 
 > **Why a proxy?** Letterboxd's Cloudflare serves a JS-based "Just a moment…" challenge to **all** datacenter egress IPs — AWS (Vercel serverless), Cloudflare Workers, and even WARP tunnels all get challenged regardless of TLS fingerprint. The fix is a **residential proxy** (e.g. proxying.io, ScraperAPI, BrightData): the scraper routes every Letterboxd fetch through `SCRAPER_PROXY`, so egress comes from a residential IP that Letterboxd does not challenge. This works from Vercel directly — no VM needed.
+
+> **Fallback:** set `SCRAPE_MODE=pages` to switch back to scraping each film's fan pages instead of the member-search engine (used if the search endpoint changes).
 
 > **Note:** The `scraper-service/` (VM + WARP) and `workers/fetch-relay/` (Cloudflare Worker) approaches were both implemented and tested but **do not bypass the challenge**. They remain in the repo as reference. The `SCRAPER_PROXY` residential-proxy path is the working solution.
 
@@ -63,8 +66,9 @@ SCRAPER_PROXY=http://USER:PASSWORD@proxy.proxying.io:8080
 Optional cache TTLs (defaults are sane; tune to trade freshness vs proxy spend):
 
 ```
-FANS_CACHE_TTL_SECONDS=86400     # parsed fan pages cached for 24h
-PROFILE_CACHE_TTL_SECONDS=1800   # Top 4 lookups cached for 30 min
+FANS_CACHE_TTL_SECONDS=86400     # parsed search results cached for 24h
+PROFILE_CACHE_TTL_SECONDS=1800   # profile lookups cached for 30 min
+SCRAPE_MODE=search               # search = member-search engine; pages = fan-page scraping
 ```
 
 `/api/match` routes every Letterboxd fetch through the residential proxy, whose IP passes Cloudflare, and caches the parsed results (`unstable_cache`, Vercel's data cache) so repeat scans and scans sharing films don't re-pay the proxy. Only successful fetches are cached — transient failures are never stored.

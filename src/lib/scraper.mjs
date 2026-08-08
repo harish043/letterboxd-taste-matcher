@@ -306,6 +306,84 @@ export function buildFansPageUrl(slug, page) {
 }
 
 /**
+ * Build a Letterboxd member-search URL that finds users who are fans of at
+ * least `minMatches` of the given films. Uses Letterboxd's own search engine
+ * (`fan:<film>` operators OR'd together), which is far cheaper and more
+ * complete than scraping every fan page — the search returns the members whose
+ * Top 4 overlaps with the query.
+ *
+ * @param {string[]} slugs Film slugs (the user's Top 4).
+ * @param {number} [minMatches=2] How many shared films to require.
+ * @returns {string} The member-search URL (encoded, proxy-safe).
+ */
+export function buildSearchUrl(slugs, minMatches = 2) {
+  const combinations = [];
+  const pick = (start, depth, chosen) => {
+    if (chosen.length === depth) {
+      combinations.push(chosen);
+      return;
+    }
+    for (let i = start; i < slugs.length; i++) {
+      pick(i + 1, depth, [...chosen, slugs[i]]);
+    }
+  };
+  pick(0, minMatches, []);
+
+  const terms = combinations.map((combo) => `fan:${combo.join("+fan:")}`);
+  // The search query uses `OR` (space-separated when URL-encoded). Parenthesize
+  // each term so the OR applies across combos.
+  const query = terms.map((t) => `(${t})`).join("%20OR%20");
+  return `${BASE_URL}/s/search/members/${query}/`;
+}
+
+/**
+ * Parse a member-search results page (the AJAX fragment returned by
+ * `/s/search/members/.../`). Each result is a `li.search-result -person` with
+ * the username in `.metadata` and display name + avatar in `.name` / `.avatar`.
+ *
+ * @param {string} html Raw search-results HTML.
+ * @returns {Array<{ username: string, displayName: string, avatar: string|null }>}
+ */
+export function parseSearchResults(html) {
+  const $ = cheerio.load(html);
+  const results = [];
+  $("li.search-result.-person").each((_, el) => {
+    const href = $(el).find("a.name").attr("href");
+    if (!href) return;
+    const username = href.replace(/^\//, "").replace(/\/$/, "");
+    const displayName = $(el).find("a.name").text().trim();
+    const avatar =
+      $(el).find("a.avatar img").attr("src") ||
+      $(el).find(".avatar img").attr("src") ||
+      null;
+    results.push({ username, displayName, avatar });
+  });
+  return results;
+}
+
+/**
+ * Parse the activity stats from a user's profile page: total films watched and
+ * films logged this year (diary). Both live in `.profile-stats`.
+ *
+ * @param {string} html Raw profile page HTML.
+ * @returns {{ films: number|null, thisYear: number|null }}
+ */
+export function parseProfileStats(html) {
+  const $ = cheerio.load(html);
+  const stats = { films: null, thisYear: null };
+  $(".profile-stats h4.profile-statistic").each((_, el) => {
+    const value = $(el).find(".value").text().trim().replace(/,/g, "");
+    const label = $(el).find(".definition").text().trim().toLowerCase();
+    if (!value || !label) return;
+    const num = Number(value);
+    if (Number.isNaN(num)) return;
+    if (label === "films") stats.films = num;
+    else if (label.includes("this year")) stats.thisYear = num;
+  });
+  return stats;
+}
+
+/**
  * Fetch one fans page and return the usernames on it.
  *
  * @param {string} slug
@@ -399,6 +477,87 @@ export async function getSharedFans(
     : [];
 
   return { shared, perFilm: clean };
+}
+
+/**
+ * Fetch a user's profile once and return their Top 4 slugs plus activity stats.
+ * Used by the search pipeline to enrich matches.
+ *
+ * @param {string} username
+ * @returns {Promise<{ topFour: string[], stats: { films: number|null, thisYear: number|null } }>}
+ * @throws {LetterboxdNotFoundError|TooFewFavoritesError|ProxyTimeoutError|ProxyError|CloudflareBlockedError}
+ */
+export async function getProfile(username) {
+  const html = await fetchHtml(`${BASE_URL}/${username}/`, { attempts: 3 });
+  const topFour = parseTopFourSlugs(html);
+  if (topFour.length < 4) {
+    if (
+      html.includes("Letterboxd - Not Found") ||
+      !html.includes("profile-header")
+    ) {
+      throw new LetterboxdNotFoundError(username);
+    }
+    throw new TooFewFavoritesError(username, topFour.length);
+  }
+  return { topFour, stats: parseProfileStats(html) };
+}
+
+/**
+ * Find users who share at least `minMatches` of the given Top 4 films, using
+ * Letterboxd's member-search engine. Returns matches with their display name,
+ * avatar, exact shared films (from each match's real Top 4), percentage, and
+ * activity stats.
+ *
+ * @param {string[]} topFour The user's Top 4 film slugs.
+ * @param {object} [options]
+ * @param {number} [options.minMatches=2] Minimum shared films.
+ * @param {(query: string) => Promise<Array<{ username: string, displayName: string, avatar: string|null }>>} [options.search]
+ *   Injectable search fetcher (defaults to raw parseSearchResults over the URL).
+ * @param {(username: string) => Promise<{ topFour: string[], stats: { films: number|null, thisYear: number|null } }>} [options.profile]
+ *   Injectable profile fetcher (defaults to getProfile), used to enrich matches.
+ * @returns {Promise<{ matches: Array<{ username: string, displayName: string, avatar: string|null, sharedFilms: string[], percentage: number, stats: { films: number|null, thisYear: number|null } }> }>}
+ */
+export async function searchMatches(
+  topFour,
+  { minMatches = 2, search = searchMembers, profile = getProfile } = {}
+) {
+  const query = buildSearchUrl(topFour, minMatches);
+  const results = await search(query);
+
+  const matches = [];
+  for (const result of results) {
+    // Skip the user themselves — searching for their own Top 4 returns them.
+    try {
+      const { topFour: theirTopFour, stats } = await profile(result.username);
+      const sharedFilms = topFour.filter((slug) =>
+        theirTopFour.includes(slug)
+      );
+      matches.push({
+        username: result.username,
+        displayName: result.displayName,
+        avatar: result.avatar,
+        sharedFilms,
+        percentage: Math.round((sharedFilms.length / topFour.length) * 100),
+        stats,
+      });
+    } catch {
+      // Profile fetch failed (proxy hiccup / rare). Skip the match.
+    }
+  }
+
+  return { matches };
+}
+
+/**
+ * Fetch a member-search URL and parse the results. Standalone so the route can
+ * wrap it in `unstable_cache`.
+ *
+ * @param {string} query A URL returned by buildSearchUrl.
+ * @returns {Promise<Array<{ username: string, displayName: string, avatar: string|null }>>}
+ */
+export async function searchMembers(query) {
+  const html = await fetchHtml(query, { attempts: 3 });
+  return parseSearchResults(html);
 }
 
 /**

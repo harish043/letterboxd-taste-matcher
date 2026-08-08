@@ -9,6 +9,9 @@ import {
   parseFansPage,
   buildMatchResult,
   buildFansPageUrl,
+  buildSearchUrl,
+  parseSearchResults,
+  parseProfileStats,
   generateSessionId,
 } from "../src/lib/scraper.mjs";
 
@@ -99,4 +102,57 @@ test("buildMatchResult minMatches=1 includes single-film matches", () => {
   assert.equal(matches.length, 2);
   assert.equal(matches[0].percentage, 100);
   assert.equal(matches[1].percentage, 50);
+});
+
+test("buildSearchUrl ORs all pairs for 2+ matches", () => {
+  const url = buildSearchUrl(["a", "b", "c", "d"], 2);
+  assert.match(url, /^https:\/\/letterboxd\.com\/s\/search\/members\//);
+  // 6 pairs: ab, ac, ad, bc, bd, cd
+  assert.match(url, /\(fan:a\+fan:b\)/);
+  assert.match(url, /\(fan:a\+fan:c\)/);
+  assert.match(url, /\(fan:a\+fan:d\)/);
+  assert.match(url, /\(fan:b\+fan:c\)/);
+  assert.match(url, /\(fan:b\+fan:d\)/);
+  assert.match(url, /\(fan:c\+fan:d\)/);
+  assert.match(url, /%20OR%20/);
+});
+
+test("buildSearchUrl builds triples for 3+ and a single AND for 4/4", () => {
+  const triples = buildSearchUrl(["a", "b", "c", "d"], 3);
+  assert.match(triples, /\(fan:a\+fan:b\+fan:c\)/);
+  assert.match(triples, /\(fan:b\+fan:c\+fan:d\)/);
+
+  const quad = buildSearchUrl(["a", "b", "c", "d"], 4);
+  assert.equal(
+    quad,
+    "https://letterboxd.com/s/search/members/(fan:a+fan:b+fan:c+fan:d)/"
+  );
+});
+
+test("parseSearchResults extracts username, display name, and avatar", () => {
+  const html = fixtures("search-results.html");
+  const results = parseSearchResults(html);
+  assert.equal(results.length, 20);
+  assert.equal(results[0].username, "smilepolicy");
+  assert.equal(results[0].displayName, "harish");
+  assert.ok(results[0].avatar.includes("a.ltrbxd.com"));
+  // every result has a username and display name
+  for (const r of results) {
+    assert.ok(r.username.length > 0);
+    assert.ok(r.displayName.length > 0);
+  }
+});
+
+test("parseProfileStats extracts films and this-year diary counts", () => {
+  const html = fixtures("profile-stats.html");
+  const stats = parseProfileStats(html);
+  assert.equal(stats.films, 343);
+  assert.equal(stats.thisYear, 45);
+});
+
+test("parseProfileStats returns nulls when no stats block", () => {
+  assert.deepEqual(parseProfileStats("<html><body></body></html>"), {
+    films: null,
+    thisYear: null,
+  });
 });

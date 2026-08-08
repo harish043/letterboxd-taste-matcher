@@ -3,6 +3,9 @@ import {
   getSharedFans,
   fetchFansPage,
   buildMatchResult,
+  searchMatches,
+  searchMembers,
+  getProfile,
   LetterboxdNotFoundError,
   TooFewFavoritesError,
   CloudflareBlockedError,
@@ -18,6 +21,9 @@ const USERNAME_REGEX = /^[a-zA-Z0-9_]{1,30}$/;
 const MAX_PAGES_PER_FILM = 20;
 const DEFAULT_PAGES_PER_FILM = 10;
 const DEFAULT_CONCURRENCY = 8;
+// Primary pipeline uses Letterboxd's member-search engine (fast, cheap, more
+// complete). Set SCRAPE_MODE=pages to fall back to fan-page scraping.
+const SCRAPE_MODE = process.env.SCRAPE_MODE === "pages" ? "pages" : "search";
 
 // --- Rate limiting ----------------------------------------------------------
 // In-memory sliding-window limiter keyed by client IP. Vercel serverless
@@ -65,13 +71,10 @@ function checkRateLimit(ip: string): number | null {
 }
 // ----------------------------------------------------------------------------
 
-// Fan lists change slowly (only when users edit their Top 4), so cache each
-// parsed (slug, page) for a day by default. Every scan that touches a cached
-// film reuses these instead of paying the residential proxy again. Only
-// successful fetches are cached — a thrown error is never stored, so transient
-// proxy failures can't poison the cache. `unstable_cache` (not `use cache`)
-// because the latter's default in-memory handler does not persist across
-// serverless requests on Vercel.
+// Search results and profile enrichment are cached because member-search
+// queries are stable (a film's fans change slowly) and profile fetches repeat
+// across scans. `unstable_cache` (not `use cache`) because the latter's default
+// in-memory handler does not persist across serverless requests on Vercel.
 const FANS_CACHE_TTL_SECONDS = Number(
   process.env.FANS_CACHE_TTL_SECONDS ?? 86400
 );
@@ -82,16 +85,28 @@ const PROFILE_CACHE_TTL_SECONDS = Number(
   process.env.PROFILE_CACHE_TTL_SECONDS ?? 1800
 );
 
-const getCachedFansPage = unstable_cache(
-  async (slug: string, page: number) => fetchFansPage(slug, page),
-  ["fans-page"],
+const getCachedSearch = unstable_cache(
+  async (query: string) => searchMembers(query),
+  ["member-search"],
   { revalidate: FANS_CACHE_TTL_SECONDS }
+);
+
+const getCachedProfile = unstable_cache(
+  async (username: string) => getProfile(username),
+  ["profile"],
+  { revalidate: PROFILE_CACHE_TTL_SECONDS }
 );
 
 const getCachedTopFour = unstable_cache(
   async (username: string) => getTopFourSlugs(username),
   ["top-four"],
   { revalidate: PROFILE_CACHE_TTL_SECONDS }
+);
+
+const getCachedFansPage = unstable_cache(
+  async (slug: string, page: number) => fetchFansPage(slug, page),
+  ["fans-page"],
+  { revalidate: FANS_CACHE_TTL_SECONDS }
 );
 
 export async function POST(request: Request) {
@@ -192,6 +207,27 @@ export async function POST(request: Request) {
 
   try {
     const topFour = await getCachedTopFour(username);
+
+    if (SCRAPE_MODE === "search") {
+      // Primary: Letterboxd member-search finds users sharing >= minMatches
+      // films. Enrich each match with their real Top 4 + activity stats so
+      // cards can show exact shared films and percentages.
+      const { matches } = await searchMatches(topFour, {
+        minMatches,
+        search: getCachedSearch,
+        profile: getCachedProfile,
+      });
+
+      return Response.json({
+        username,
+        topFour,
+        matchCount: matches.length,
+        matches,
+        scanned: null,
+      });
+    }
+
+    // Fallback: fan-page scraping (SCRAPE_MODE=pages).
     const { perFilm } = await getSharedFans(topFour, {
       maxPagesPerFilm,
       delayMs,

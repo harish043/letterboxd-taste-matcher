@@ -5,8 +5,11 @@ import Link from "next/link";
 
 type Match = {
   username: string;
+  displayName?: string;
+  avatar?: string | null;
   sharedFilms: string[];
   percentage: number;
+  stats?: { films: number | null; thisYear: number | null };
 };
 
 type ScannedFilm = {
@@ -19,7 +22,7 @@ type MatchResult = {
   topFour: string[];
   matchCount: number;
   matches: Match[];
-  scanned: Record<string, ScannedFilm>;
+  scanned: Record<string, ScannedFilm> | null;
 };
 
 type Status = "idle" | "loading" | "success" | "error";
@@ -191,8 +194,8 @@ function Results({ result }: { result: MatchResult }) {
             <p className="mt-10 text-sm leading-7 text-slate">
               {minMatchFilter >= 2 ? (
                 <>
-                  No profiles share {minMatchFilter}+ of this user&rsquo;s Top 4
-                  in the scanned fans. Strong taste overlap is rare &mdash; try{" "}
+                  No profiles share {minMatchFilter}+ of this user&rsquo;s Top 4.
+                  Strong taste overlap is rare &mdash; try{" "}
                   <button
                     type="button"
                     onClick={() => setMinMatchFilter(1)}
@@ -204,8 +207,7 @@ function Results({ result }: { result: MatchResult }) {
                 </>
               ) : (
                 <>
-                  No overlapping fans yet. The scan only covers the first few
-                  pages of each film&rsquo;s fan list &mdash; try a more popular
+                  No overlapping fans found yet &mdash; try a more popular
                   profile.
                 </>
               )}
@@ -227,24 +229,42 @@ function Results({ result }: { result: MatchResult }) {
 
 function MatchCard({ match }: { match: Match }) {
   const shared = match.sharedFilms.length;
+  const hasStats = match.stats && (match.stats.films != null || match.stats.thisYear != null);
 
   return (
     <li className="group flex flex-col gap-4 rounded-2xl border border-steel bg-surface p-5 transition-colors hover:border-amber/60">
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="truncate font-mono text-sm font-medium text-bone">
-            <Link
-              href={`https://letterboxd.com/${match.username}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="transition-colors hover:text-amber"
-            >
-              /{match.username}
-            </Link>
-          </p>
-          <p className="mt-1 font-mono text-xs text-slate">
-            {shared} shared {shared === 1 ? "film" : "films"}
-          </p>
+        <div className="flex min-w-0 items-center gap-3">
+          {match.avatar && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={match.avatar}
+              alt=""
+              className="h-9 w-9 shrink-0 rounded-full border border-steel"
+            />
+          )}
+          <div className="min-w-0">
+            <p className="truncate font-mono text-sm font-medium text-bone">
+              <Link
+                href={`https://letterboxd.com/${match.username}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="transition-colors hover:text-amber"
+              >
+                {match.displayName ? (
+                  <>
+                    {match.displayName}
+                    <span className="ml-1.5 text-xs text-slate">/{match.username}</span>
+                  </>
+                ) : (
+                  `/${match.username}`
+                )}
+              </Link>
+            </p>
+            <p className="mt-1 font-mono text-xs text-slate">
+              {shared} shared {shared === 1 ? "film" : "films"}
+            </p>
+          </div>
         </div>
         <PercentageBadge percentage={match.percentage} />
       </div>
@@ -263,6 +283,14 @@ function MatchCard({ match }: { match: Match }) {
           </li>
         ))}
       </ul>
+
+      {hasStats && (
+        <p className="mt-auto border-t border-steel pt-3 font-mono text-xs text-slate">
+          {match.stats!.thisYear != null && `${match.stats!.thisYear} this year`}
+          {match.stats!.thisYear != null && match.stats!.films != null && " · "}
+          {match.stats!.films != null && `${match.stats!.films} films total`}
+        </p>
+      )}
     </li>
   );
 }
@@ -285,8 +313,9 @@ function PercentageBadge({ percentage }: { percentage: number }) {
 function Breakdown({
   scanned,
 }: {
-  scanned: Record<string, ScannedFilm>;
+  scanned: Record<string, ScannedFilm> | null;
 }) {
+  if (!scanned || Object.keys(scanned).length === 0) return null;
   return (
     <section className="mt-16 border-t border-steel pt-8">
       <h3 className="font-mono text-xs uppercase tracking-[0.3em] text-slate">

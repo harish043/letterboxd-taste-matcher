@@ -9,19 +9,26 @@ const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 // Hard per-fetch timeout. Residential proxies charge per open connection and
-// Vercel functions time out, so a slow/hung page must abort quickly. Most
-// successful responses arrive in 2–4s; 10s catches stragglers without letting
-// a hung connection eat the whole function budget.
-const FETCH_TIMEOUT_MS = 10000;
+// Vercel functions time out, so a slow/hung page must abort quickly.
+const FETCH_TIMEOUT_MS = 15000;
 const MAX_ATTEMPTS = 3;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// The residential proxy rotates egress IPs per request on its own (and per
-// plan, sometimes per session). We intentionally do NOT pin a sticky session:
-// a pinned IP that Cloudflare flags makes every retry fail against the same
-// dead IP. Letting the proxy rotate means a failed request naturally gets a
-// fresh IP on retry.
+// Stable per-process id used to pin a sticky proxy session across requests.
+const STICKY_SESSION_ID = Date.now().toString(36);
+
+// proxying.io sticky sessions: append `_session-<id>` to the password so the
+// proxy keeps the same egress IP for the lifetime of this process. If the URL
+// already carries a session option, leave it untouched.
+function applyStickySession(proxyUrl) {
+  if (!proxyUrl) return proxyUrl;
+  if (/_session-[A-Za-z0-9]+/.test(proxyUrl)) return proxyUrl;
+  const match = proxyUrl.match(/^(https?:\/\/)([^:/@]+):([^@]*)@(.*)$/);
+  if (!match) return proxyUrl;
+  const [, scheme, user, pass, host] = match;
+  return `${scheme}${user}:${pass}_session-${STICKY_SESSION_ID}@${host}`;
+}
 
 // ---------------------------------------------------------------------------
 // Typed errors so the API route can map to the right HTTP status.
@@ -98,15 +105,11 @@ function resolveCurlBinary() {
  * failures and Cloudflare challenge pages are retried up to MAX_ATTEMPTS.
  *
  * @param {string} url
- * @param {object} [options]
- * @param {number} [options.attempts] Max fetch attempts (defaults to MAX_ATTEMPTS).
- *   Fans-page fetches pass attempts=1 because the worker pool already tolerates
- *   a dropped page — retrying here just burns the function budget.
  * @returns {Promise<string>} The HTML body.
  * @throws {ProxyTimeoutError|ProxyError|LetterboxdForbiddenError}
  */
-async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
-  const proxy = process.env.SCRAPER_PROXY;
+async function fetchHtml(url) {
+  const proxy = applyStickySession(process.env.SCRAPER_PROXY);
 
   const browserHeaders = [
     "-H",
@@ -121,24 +124,11 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
     "Sec-Fetch-Mode: navigate",
     "-H",
     "Sec-Fetch-Dest: document",
-    // curl only decompresses when it both sends Accept-Encoding AND is told
-    // to decompress. Without this every page comes back raw — measured ~109KB
-    // vs ~21KB gzip-compressed (5.2x). gzip instead of brotli because Windows
-    // curl lacks the brotli decoder.
-    "-H",
-    "Accept-Encoding: gzip, deflate",
-    "--compressed",
   ];
 
   const curlArgs = [
     "-sS", // silent, but surface errors
     "--http1.1",
-    // On Windows, curl uses the schannel TLS backend, which is prone to
-    // spurious "server closed abruptly (missing close_notify)" failures and
-    // TLS handshake errors on some proxies. --ssl-no-revoke skips certificate
-    // revocation checks and is ignored by OpenSSL builds (Linux/Vercel), so it
-    // is safe everywhere.
-    "--ssl-no-revoke",
     "--max-time",
     String(Math.ceil(FETCH_TIMEOUT_MS / 1000)),
     ...(proxy ? ["--proxy", proxy] : []),
@@ -148,7 +138,7 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
 
   let lastError;
 
-  for (let attempt = 0; attempt < attempts; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -160,12 +150,11 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
 
       // A 403 challenge page arrives as a successful curl run (HTTP 200-ish
       // body with "Just a moment..."). Treat it as retryable; if it persists,
-      // report the profile as inaccessible. Back off longer on each attempt so
-      // the rotating proxy has time to land on a fresh, unchallenged IP.
+      // report the profile as inaccessible.
       if (result.stdout.includes("Just a moment")) {
         lastError = new Error("Cloudflare challenge");
-        if (attempt < attempts - 1) {
-          await sleep(800 + attempt * 800);
+        if (attempt < MAX_ATTEMPTS - 1) {
+          await sleep(600);
           continue;
         }
         throw new LetterboxdForbiddenError("profile");
@@ -183,7 +172,7 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
         lastError = new ProxyError(url, error.message);
       }
 
-      if (attempt < attempts - 1) await sleep(500 + attempt * 500);
+      if (attempt < MAX_ATTEMPTS - 1) await sleep(500);
     } finally {
       clearTimeout(timer);
     }
@@ -204,10 +193,7 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
  */
 export async function getTopFourSlugs(username) {
   const url = `${BASE_URL}/${username}/`;
-  // The profile fetch is the single point of failure for the whole scan — if
-  // it dies, no matches can be computed. Give it extra retry budget so a
-  // transiently challenged proxy IP (rotating) is worked around.
-  const html = await fetchHtml(url, { attempts: 6 });
+  const html = await fetchHtml(url);
   const slugs = parseTopFourSlugs(html);
 
   if (slugs.length < 4) {
@@ -284,15 +270,12 @@ export function parseFansPage(html, slug, page) {
  * @param {number} page 1-indexed page number.
  * @returns {Promise<{ usernames: string[], hasNext: boolean, count: number|null }>}
  */
-export async function fetchFansPage(slug, page, { attempts = 1 } = {}) {
-  // Always use the paginated URL form — even for page 1. The bare `/fans/` URL
-  // triggers a Cloudflare challenge nearly 100% of the time, while
-  // `/fans/page/1/` returns the same content with a 200.
-  const url = `${BASE_URL}/film/${slug}/fans/page/${page}/`;
-  // Default to a single attempt: the worker pool skips a dropped page anyway,
-  // so retrying here (up to 10s per attempt) would only burn the function
-  // budget. Callers that need the fan count pass attempts: 3.
-  const html = await fetchHtml(url, { attempts });
+async function fetchFansPage(slug, page) {
+  const url =
+    page === 1
+      ? `${BASE_URL}/film/${slug}/fans/`
+      : `${BASE_URL}/film/${slug}/fans/page/${page}/`;
+  const html = await fetchHtml(url);
   return parseFansPage(html, slug, page);
 }
 
@@ -305,103 +288,45 @@ export async function fetchFansPage(slug, page, { attempts = 1 } = {}) {
  * @param {number} [options.maxPagesPerFilm=5] Max fans pages to scan per film.
  * @param {number} [options.delayMs=1500] Politeness delay between requests.
  * @param {number} [options.concurrency=8] Max concurrent proxy requests.
- * @param {(slug: string, page: number, opts?: { attempts?: number }) => Promise<{ usernames: string[], hasNext: boolean, count: number|null }>} [options.fetchPage]
- *   Custom per-page fetcher (e.g. a cached wrapper). Defaults to fetchFansPage.
- * @returns {Promise<{ shared: string[], perFilm: Record<string, { count: number|null, pagesFetched: number, scannedPages: number, fans: string[] }> }>}
+ * @returns {Promise<{ shared: string[], perFilm: Record<string, { count: number|null, scannedPages: number, fans: string[] }> }>}
  */
 export async function getSharedFans(
   slugs,
-  {
-    maxPagesPerFilm = 5,
-    delayMs = 1500,
-    concurrency = 8,
-    fetchPage = fetchFansPage,
-  } = {}
+  { maxPagesPerFilm = 5, delayMs = 1500, concurrency = 8 } = {}
 ) {
   const perFilm = Object.fromEntries(
     slugs.map((slug) => [
       slug,
-      {
-        count: null,
-        totalPages: null,
-        pagesFetched: 0,
-        scannedPages: 0,
-        fans: new Set(),
-      },
+      { count: null, scannedPages: 0, done: false, fans: new Set() },
     ])
   );
 
-  // Phase 1: fetch page 1 of every film first. It carries the fan count (in the
-  // sub-nav), which tells us the total number of pages for that film. The fans
-  // list is sorted alphabetically by username, so taking only the first pages
-  // would bias matches toward accounts starting with digits/a-f. We instead
-  // spread the page budget evenly across the entire list (phase 2).
-  const firstPageResults = await Promise.all(
-    slugs.map(async (slug) => {
-      try {
-        // Page 1 is load-bearing: it carries the fan count that determines the
-        // spread schedule. Give it a generous retry budget so a transiently
-        // challenged proxy IP is worked around.
-        const { usernames, hasNext, count } = await fetchPage(slug, 1, {
-          attempts: 6,
-        });
-        return { slug, usernames, hasNext, count };
-      } catch {
-        return { slug, usernames: [], hasNext: false, count: null };
-      }
-    })
-  );
-
+  // Worker-pool fetch: schedule every (film, page) fetch up front and run them
+  // through a bounded pool so the residential proxy is kept saturated without
+  // overloading it (which re-triggers Cloudflare challenges).
   const tasks = [];
-
-  for (const { slug, usernames, count } of firstPageResults) {
-    for (const username of usernames) perFilm[slug].fans.add(username);
-    if (count != null) perFilm[slug].count = count;
-    if (usernames.length > 0) {
-      // Count page 1 as fetched only if it actually returned fans.
-      perFilm[slug].pagesFetched += 1;
-    }
-    perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, 1);
-
-    if (count != null) {
-      // Letterboxd caps the fans list at 256 pages (6,400 fans) even for
-      // films with far more fans; pages beyond that return empty. Clamp so we
-      // never schedule unreachable pages.
-      perFilm[slug].totalPages = Math.min(256, Math.max(1, Math.ceil(count / 25)));
-    }
-
-    // Schedule the remaining pages as an even spread across the whole list so
-    // every part of the alphabet is represented. 25 fans per page.
-    const totalPages = perFilm[slug].totalPages ?? maxPagesPerFilm;
-    const remaining = Math.max(0, maxPagesPerFilm - 1);
-    for (let i = 1; i <= remaining; i++) {
-      let page;
-      if (totalPages <= 1) {
-        page = 1; // degenerate: single-page film; re-fetch is cheap and deduped
-      } else {
-        // Spread i over (1, totalPages] so the last page is included.
-        page = Math.round(1 + (i * (totalPages - 1)) / remaining);
-        page = Math.max(2, Math.min(totalPages, page));
-      }
+  for (const slug of slugs) {
+    for (let page = 1; page <= maxPagesPerFilm; page++) {
       tasks.push({ slug, page });
     }
   }
 
-  // Phase 2: worker-pool fetch the spread pages.
   let cursor = 0;
   async function worker() {
     while (cursor < tasks.length) {
-      const { slug, page } = tasks[cursor++];
+      const task = tasks[cursor++];
+      const { slug, page } = task;
+      if (perFilm[slug].done) continue; // skip once the film has no more pages
       try {
-        // One retry: the worker pool tolerates a dropped page, but a single
-        // follow-up attempt recovers the common transient challenge without
-        // burning much budget.
-        const { usernames } = await fetchPage(slug, page, { attempts: 2 });
+        const { usernames, hasNext, count } = await fetchFansPage(slug, page);
+        if (perFilm[slug].done) continue; // lost a race with page 1's hasNext
         for (const username of usernames) perFilm[slug].fans.add(username);
-        if (usernames.length > 0) perFilm[slug].pagesFetched += 1;
+        if (count != null) perFilm[slug].count = count;
         perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, page);
+        if (!hasNext) perFilm[slug].done = true;
       } catch {
-        // Skip individual page failures; a single dropped page is tolerable.
+        // Skip individual page failures; the film's other pages still get
+        // processed. Per-page retries happen inside fetchHtml.
       }
       if (delayMs > 0) await sleep(delayMs);
     }
@@ -416,7 +341,6 @@ export async function getSharedFans(
       slug,
       {
         count: perFilm[slug].count,
-        pagesFetched: perFilm[slug].pagesFetched,
         scannedPages: perFilm[slug].scannedPages,
         fans: [...perFilm[slug].fans],
       },
@@ -437,9 +361,9 @@ export async function getSharedFans(
  * by shared-film percentage, filter by minimum matches.
  *
  * @param {string[]} topFour The user's Top 4 film slugs.
- * @param {Record<string, { count: number|null, pagesFetched: number, scannedPages: number, fans: string[] }>} perFilm
+ * @param {Record<string, { count: number|null, scannedPages: number, fans: string[] }>} perFilm
  * @param {number} [minMatches=1] Minimum shared films for a match.
- * @returns {{ matches: Array<{ username: string, sharedFilms: string[], percentage: number }>, scanned: Record<string, { totalFans: number|null, pagesFetched: number, scannedPages: number }> }}
+ * @returns {{ matches: Array<{ username: string, sharedFilms: string[], percentage: number }>, scanned: Record<string, { totalFans: number|null, scannedPages: number }> }}
  */
 export function buildMatchResult(topFour, perFilm, minMatches = 1) {
   const seen = new Map();
@@ -465,9 +389,9 @@ export function buildMatchResult(topFour, perFilm, minMatches = 1) {
     );
 
   const scanned = Object.fromEntries(
-    Object.entries(perFilm).map(([slug, { count, pagesFetched, scannedPages }]) => [
+    Object.entries(perFilm).map(([slug, { count, scannedPages }]) => [
       slug,
-      { totalFans: count, pagesFetched, scannedPages },
+      { totalFans: count, scannedPages },
     ])
   );
 

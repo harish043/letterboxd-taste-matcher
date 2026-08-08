@@ -11,7 +11,6 @@ type Match = {
 
 type ScannedFilm = {
   totalFans: number | null;
-  pagesFetched: number;
   scannedPages: number;
 };
 
@@ -26,11 +25,6 @@ type MatchResult = {
 type Status = "idle" | "loading" | "success" | "error";
 
 const DEFAULT_OPTIONS = { maxPagesPerFilm: 15, delayMs: 0 };
-
-// Number of match cards rendered before a "Load more" button appears. Keeps
-// the DOM lean when the 1+ view surfaces thousands of matches.
-const INITIAL_VISIBLE = 24;
-const VISIBLE_INCREMENT = 24;
 
 const FILTER_OPTIONS = [
   { value: 2, label: "2+ Matches" },
@@ -116,8 +110,8 @@ export default function MatchFinder() {
       </form>
 
       <p className="mt-4 font-mono text-xs text-slate">
-        e.g. dave &middot; spreads {DEFAULT_OPTIONS.maxPagesPerFilm} page
-        requests across each film&rsquo;s fan list
+        e.g. dave &middot; scans the first {DEFAULT_OPTIONS.maxPagesPerFilm}{" "}
+        fan pages of each film
       </p>
 
       {status === "error" && (
@@ -139,25 +133,16 @@ export default function MatchFinder() {
 
 function Results({ result }: { result: MatchResult }) {
   const [minMatchFilter, setMinMatchFilter] = useState(2);
-  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE);
   const filteredMatches = result.matches.filter(
     (match) => match.sharedFilms.length >= minMatchFilter
   );
-
-  function changeFilter(value: number) {
-    setMinMatchFilter(value);
-    setVisibleCount(INITIAL_VISIBLE);
-  }
-
-  const visibleMatches = filteredMatches.slice(0, visibleCount);
 
   return (
     <div className="mt-14 w-full max-w-5xl">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="font-display text-3xl font-bold text-bone">
           {filteredMatches.length}{" "}
-          {filteredMatches.length === 1 ? "profile" : "profiles"}{" "}
-          {filteredMatches.length === 1 ? "shares" : "share"}{" "}
+          {filteredMatches.length === 1 ? "profile" : "profiles"} share{" "}
           {minMatchFilter >= 2
             ? `${minMatchFilter}+ of your Top 4`
             : "your taste"}
@@ -183,7 +168,7 @@ function Results({ result }: { result: MatchResult }) {
               <button
                 key={option.value}
                 type="button"
-                onClick={() => changeFilter(option.value)}
+                onClick={() => setMinMatchFilter(option.value)}
                 aria-pressed={minMatchFilter === option.value}
                 className={`h-10 rounded-full border px-4 font-mono text-xs tracking-wide transition-colors ${
                   minMatchFilter === option.value
@@ -210,7 +195,7 @@ function Results({ result }: { result: MatchResult }) {
                   in the scanned fans. Strong taste overlap is rare &mdash; try{" "}
                   <button
                     type="button"
-                    onClick={() => changeFilter(1)}
+                    onClick={() => setMinMatchFilter(1)}
                     className="font-medium text-amber underline underline-offset-2 hover:text-bone"
                   >
                     lowering to 1+ films
@@ -219,34 +204,18 @@ function Results({ result }: { result: MatchResult }) {
                 </>
               ) : (
                 <>
-                  No overlapping fans yet. The scan only covers a sample of
-                  pages spread across each film&rsquo;s fan list &mdash; try a
-                  more popular profile.
+                  No overlapping fans yet. The scan only covers the first few
+                  pages of each film&rsquo;s fan list &mdash; try a more popular
+                  profile.
                 </>
               )}
             </p>
           ) : (
-            <>
-              <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {visibleMatches.map((match) => (
-                  <MatchCard key={match.username} match={match} />
-                ))}
-              </ul>
-
-              {visibleCount < filteredMatches.length && (
-                <div className="mt-8 flex justify-center">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setVisibleCount((count) => count + VISIBLE_INCREMENT)
-                    }
-                    className="h-12 rounded-full border border-steel bg-surface px-8 font-mono text-xs tracking-wide text-bone transition-colors hover:border-amber/60 hover:text-amber"
-                  >
-                    Load more
-                  </button>
-                </div>
-              )}
-            </>
+            <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {filteredMatches.map((match) => (
+                <MatchCard key={match.username} match={match} />
+              ))}
+            </ul>
           )}
         </>
       )}
@@ -329,8 +298,8 @@ function Breakdown({
             <dt className="truncate font-mono text-sm text-bone">{slug}</dt>
             <dd className="mt-2 font-mono text-xs text-slate">
               {info.totalFans?.toLocaleString() ?? "?"} fans &middot;{" "}
-              {info.pagesFetched} page
-              {info.pagesFetched === 1 ? "" : "s"} scanned
+              {info.scannedPages} page
+              {info.scannedPages === 1 ? "" : "s"}
             </dd>
           </div>
         ))}

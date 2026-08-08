@@ -60,8 +60,8 @@ test("buildMatchResult intersects fans, ranks by percentage, and filters", () =>
     { username: "u3", sharedFilms: ["film-a", "film-b"], percentage: 100 },
   ]);
   assert.deepEqual(scanned, {
-    "film-a": { totalFans: 100, pagesFetched: undefined, scannedPages: 1 },
-    "film-b": { totalFans: 200, pagesFetched: undefined, scannedPages: 1 },
+    "film-a": { totalFans: 100, scannedPages: 1 },
+    "film-b": { totalFans: 200, scannedPages: 1 },
   });
 });
 

@@ -1,7 +1,6 @@
 import {
   getTopFourSlugs,
   getSharedFans,
-  fetchFansPage,
   buildMatchResult,
   LetterboxdNotFoundError,
   TooFewFavoritesError,
@@ -9,45 +8,14 @@ import {
   ProxyTimeoutError,
   ProxyError,
 } from "@/lib/scraper.mjs";
-import { unstable_cache } from "next/cache";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const USERNAME_REGEX = /^[a-zA-Z0-9_]{1,30}$/;
 const MAX_PAGES_PER_FILM = 20;
-const DEFAULT_PAGES_PER_FILM = 10;
-// Measured sweet spot: higher concurrency saturates the proxy and re-triggers
-// failures; lower leaves latency on the table. 12 ≈ 21s for 60 pages (vs 34s
-// at 8).
-const DEFAULT_CONCURRENCY = 12;
-
-// Fan lists change slowly (only when users edit their Top 4), so cache each
-// parsed (slug, page) for a day by default. Every scan that touches a cached
-// film reuses these instead of paying the residential proxy again. Only
-// successful fetches are cached — a thrown error is never stored, so transient
-// proxy failures can't poison the cache.
-const FANS_CACHE_TTL_SECONDS = Number(
-  process.env.FANS_CACHE_TTL_SECONDS ?? 86400
-);
-// A user's Top 4 changes less often still, but people do edit it — keep it
-// fresher than the fan lists.
-const PROFILE_CACHE_TTL_SECONDS = Number(
-  process.env.PROFILE_CACHE_TTL_SECONDS ?? 3600
-);
-
-const getCachedFansPage = unstable_cache(
-  async (slug: string, page: number) =>
-    fetchFansPage(slug, page, { attempts: 6 }),
-  ["fans-page"],
-  { revalidate: FANS_CACHE_TTL_SECONDS }
-);
-
-const getCachedTopFour = unstable_cache(
-  async (username: string) => getTopFourSlugs(username),
-  ["top-four"],
-  { revalidate: PROFILE_CACHE_TTL_SECONDS }
-);
+const DEFAULT_PAGES_PER_FILM = 15;
+const DEFAULT_CONCURRENCY = 8;
 
 export async function POST(request: Request) {
   let body: {
@@ -134,12 +102,11 @@ export async function POST(request: Request) {
   }
 
   try {
-    const topFour = await getCachedTopFour(username);
+    const topFour = await getTopFourSlugs(username);
     const { perFilm } = await getSharedFans(topFour, {
       maxPagesPerFilm,
       delayMs,
       concurrency: DEFAULT_CONCURRENCY,
-      fetchPage: getCachedFansPage,
     });
 
     const { matches, scanned } = buildMatchResult(topFour, perFilm, minMatches);
@@ -171,13 +138,9 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof LetterboxdForbiddenError) {
-      // This fires when Letterboxd's Cloudflare challenge persists through all
-      // retries. We can't tell a genuinely private profile from a bot-protection
-      // block, so be honest about both possibilities instead of asserting the
-      // profile is private.
       return Response.json(
         {
-          error: `We couldn't access the profile "${username}" — Letterboxd blocked our requests (this can happen if the profile is private, or if bot protection is throttling us). Please try again in a moment.`,
+          error: `The profile "${username}" is private or inaccessible. Make sure the profile is public.`,
         },
         { status: 403 }
       );

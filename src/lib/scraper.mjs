@@ -12,6 +12,10 @@ const USER_AGENT =
 // Vercel functions time out, so a slow/hung page must abort quickly.
 const FETCH_TIMEOUT_MS = 15000;
 const MAX_ATTEMPTS = 3;
+// Bounded parallelism for the search pipeline: firing all 15 combo queries at
+// once re-triggers Cloudflare challenges on the residential proxy (~8-12 is
+// the measured safe sweet spot).
+const MAX_SEARCH_CONCURRENCY = 8;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -117,13 +121,15 @@ function resolveCurlBinary() {
  *
  * Every attempt runs under an AbortController with a strict timeout so a hung
  * proxy connection is aborted instead of consuming paid bandwidth. Transient
- * failures and Cloudflare challenge pages are retried up to MAX_ATTEMPTS.
+ * failures and Cloudflare challenge pages are retried up to `attempts`.
  *
  * @param {string} url
+ * @param {object} [options]
+ * @param {number} [options.attempts=MAX_ATTEMPTS] Max fetch attempts before giving up.
  * @returns {Promise<string>} The HTML body.
  * @throws {ProxyTimeoutError|ProxyError|CloudflareBlockedError}
  */
-async function fetchHtml(url) {
+async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
   const baseProxy = process.env.SCRAPER_PROXY;
   // Start with the process's sticky session; rotate on block (see below).
   let sessionId = STICKY_SESSION_ID;
@@ -158,7 +164,7 @@ async function fetchHtml(url) {
 
   let lastError;
 
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
     // Rebuild the proxy URL each attempt so a blocked session is abandoned in
     // favor of a fresh one on the next try.
     const proxy = applyStickySession(baseProxy, sessionId);
@@ -177,7 +183,7 @@ async function fetchHtml(url) {
       // the proxy egress IP is being throttled — not the profile being private.
       if (result.stdout.includes("Just a moment")) {
         lastError = new Error("Cloudflare challenge");
-        if (attempt < MAX_ATTEMPTS - 1) {
+        if (attempt < attempts - 1) {
           // The current session's IP is flagged; rotate before retrying.
           sessionId = generateSessionId();
           await sleep(600);
@@ -196,7 +202,7 @@ async function fetchHtml(url) {
         lastError = new ProxyError(url, error.message);
       }
 
-      if (attempt < MAX_ATTEMPTS - 1) {
+      if (attempt < attempts - 1) {
         // Timeout/connection drop may mean the current IP is bad; rotate.
         sessionId = generateSessionId();
         await sleep(500);
@@ -532,32 +538,6 @@ export async function getSharedFans(
 }
 
 /**
- * Fetch a user's profile once and return their Top 4 slugs plus activity stats.
- * Used by the search pipeline to enrich matches.
- *
- * @param {string} username
- * @returns {Promise<{ topFour: string[], stats: { films: number|null, thisYear: number|null } }>}
- * @throws {LetterboxdNotFoundError|TooFewFavoritesError|ProxyTimeoutError|ProxyError|CloudflareBlockedError}
- */
-export async function getProfile(username) {
-  const html = await fetchHtml(`${BASE_URL}/${username}/`, { attempts: 3 });
-  const films = parseTopFour(html);
-  // Enrichment only needs slugs for the shared-film intersection — posters are
-  // resolved for the searcher's own Top 4, not for every match's.
-  const topFour = films.map((film) => film.slug);
-  if (topFour.length < 4) {
-    if (
-      html.includes("Letterboxd - Not Found") ||
-      !html.includes("profile-header")
-    ) {
-      throw new LetterboxdNotFoundError(username);
-    }
-    throw new TooFewFavoritesError(username, topFour.length);
-  }
-  return { topFour, stats: parseProfileStats(html) };
-}
-
-/**
  * Find users who share the given Top 4 films using only Letterboxd's
  * member-search engine — no per-match profile fetches. Runs one discrete query
  * per film combination (6 pairs + 4 triples + 1 quad). A member returned by a
@@ -597,14 +577,35 @@ export async function searchMatches(
 
   const queries = combos.map((combo) => ({
     combo,
-    url: `${BASE_URL}/s/search/members/(${combo.map((s) => `fan:${s}`).join("+")})/`,
+    url: buildSearchUrl(combo, combo.length),
   }));
 
-  // Fire every query in parallel; a failing query just yields fewer matches.
-  const settled = await Promise.allSettled(queries.map((q) => search(q.url)));
+  // Run queries through a bounded pool so the residential proxy stays saturated
+  // without being overloaded. A failing query just yields fewer matches.
+  const results = new Array(queries.length);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < queries.length) {
+      const i = cursor++;
+      try {
+        results[i] = {
+          status: "fulfilled",
+          value: await search(queries[i].url),
+        };
+      } catch (error) {
+        results[i] = { status: "rejected", reason: error };
+      }
+    }
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(MAX_SEARCH_CONCURRENCY, queries.length || 1) },
+      worker
+    )
+  );
 
   const byUsername = new Map();
-  settled.forEach((result, i) => {
+  results.forEach((result, i) => {
     if (result.status !== "fulfilled") return;
     const combo = queries[i].combo;
     for (const member of result.value) {
@@ -621,8 +622,8 @@ export async function searchMatches(
     }
   });
 
-  const matches = [...byUsername.values()].map(
-    ({ username, displayName, avatar, badge, films }) => {
+  const matches = [...byUsername.values()]
+    .map(({ username, displayName, avatar, badge, films }) => {
       const sharedFilms = slugs.filter((slug) => films.has(slug));
       return {
         username,
@@ -632,8 +633,11 @@ export async function searchMatches(
         sharedFilms,
         percentage: Math.round((sharedFilms.length / slugs.length) * 100),
       };
-    }
-  );
+    })
+    .sort(
+      (a, b) =>
+        b.percentage - a.percentage || a.username.localeCompare(b.username)
+    );
 
   return { matches };
 }

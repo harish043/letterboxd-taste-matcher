@@ -50,6 +50,15 @@ function clientIp(request: Request): string {
 function checkRateLimit(ip: string): number | null {
   const now = Date.now();
   const windowStart = now - RATE_LIMIT_WINDOW_MS;
+
+  // Prune expired entries so the map never grows unboundedly on a long-lived
+  // instance. Amortized sweep, only once the map gets large.
+  if (rateLimitHits.size > 1000) {
+    for (const [key, hits] of rateLimitHits) {
+      if (hits[hits.length - 1] <= windowStart) rateLimitHits.delete(key);
+    }
+  }
+
   const recent = (rateLimitHits.get(ip) ?? []).filter(
     (t) => t > windowStart
   );
@@ -223,12 +232,18 @@ export async function POST(request: Request) {
         search: getCachedSearch,
       });
 
+      // Honor minMatches (default 1 = return every tier; the client filters
+      // client-side for its tier switcher).
+      const filtered = matches.filter(
+        (match) => match.sharedFilms.length >= minMatches
+      );
+
       return Response.json({
         username,
         topFour,
         stats,
-        matchCount: matches.length,
-        matches,
+        matchCount: filtered.length,
+        matches: filtered,
         scanned: null,
       });
     }

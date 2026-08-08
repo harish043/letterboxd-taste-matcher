@@ -7,6 +7,8 @@ import {
   getTopFour,
   getSharedFans,
   buildMatchResult,
+  LetterboxdNotFoundError,
+  TooFewFavoritesError,
 } from "../src/lib/scraper.mjs";
 
 // Minimal .env loader (works from the repo root via systemd or manually).
@@ -127,9 +129,15 @@ async function handleMatch(req, res) {
     const message =
       error instanceof Error ? error.message : "Unknown scraping error.";
 
-    if (message.includes("No favorites section")) {
+    if (error instanceof LetterboxdNotFoundError) {
       return sendJson(res, 404, {
         error: `Username "${username}" not found or has no Top 4.`,
+      });
+    }
+
+    if (error instanceof TooFewFavoritesError) {
+      return sendJson(res, 400, {
+        error: `Username "${username}" needs at least 4 favorite films.`,
       });
     }
 

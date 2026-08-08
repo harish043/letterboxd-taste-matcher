@@ -10,7 +10,6 @@ type Match = {
   badge?: string | null;
   sharedFilms: string[];
   percentage: number;
-  stats?: { films: number | null; thisYear: number | null };
 };
 
 type Film = {
@@ -47,7 +46,7 @@ const FILTER_OPTIONS = [
 
 const LOADING_STEPS = [
   "Fetching profile\u2026",
-  "Scanning fan pages\u2026",
+  "Searching members\u2026",
   "Cross-referencing cinema twins\u2026",
   "Almost there\u2026",
 ];
@@ -564,7 +563,7 @@ function MatchCarousel({
           tabIndex={0}
           onKeyDown={handleTrackKeyDown}
           aria-label="Match results (use arrow keys to scroll)"
-          className="carousel-track flex gap-4 overflow-x-auto py-1 focus-visible:outline-none"
+          className="carousel-track flex gap-4 overflow-x-auto rounded-2xl py-1 focus-visible:outline-2 focus-visible:outline-amber focus-visible:outline-offset-2"
         >
           {matches.map((match) => (
             <MatchCard key={match.username} match={match} topFour={topFour} />
@@ -609,14 +608,13 @@ function MatchCard({
   topFour: Film[];
 }) {
   const shared = match.sharedFilms.length;
-  const hasStats = match.stats && (match.stats.films != null || match.stats.thisYear != null);
   const filmsBySlug = new Map(topFour.map((film) => [film.slug, film]));
   const sharedFilms = match.sharedFilms
     .map((slug) => filmsBySlug.get(slug))
     .filter((film): film is Film => Boolean(film));
 
   return (
-    <li className="group flex w-80 shrink-0 flex-col gap-4 rounded-2xl border border-steel bg-surface p-6 transition-colors hover:border-amber/50">
+    <li className="group flex w-72 shrink-0 flex-col gap-3 rounded-2xl border border-steel bg-surface p-4 transition-colors hover:border-amber/50">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           {match.avatar && (
@@ -624,11 +622,11 @@ function MatchCard({
             <img
               src={match.avatar}
               alt=""
-              className="h-11 w-11 shrink-0 rounded-full border-2 border-amber/40 bg-raise"
+              className="h-10 w-10 shrink-0 rounded-full border-2 border-amber/40 bg-raise"
             />
           )}
           <div className="min-w-0">
-            <p className="truncate font-display text-lg font-semibold leading-tight text-bone">
+            <p className="truncate font-display text-base font-semibold leading-tight text-bone">
               <Link
                 href={`https://letterboxd.com/${match.username}`}
                 target="_blank"
@@ -653,41 +651,22 @@ function MatchCard({
       </div>
 
       {sharedFilms.length > 0 ? (
-        <ul className="flex flex-wrap gap-2">
+        <ul className="flex flex-wrap gap-1.5">
           {sharedFilms.map((film) => (
             <li key={film.slug} title={film.title}>
               <Link
                 href={`https://letterboxd.com/film/${film.slug}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="block overflow-hidden rounded border border-steel transition-colors hover:border-amber/60"
+                className="block rounded border border-steel px-2 py-1 font-mono text-[11px] leading-none text-slate transition-colors hover:border-amber/60 hover:text-amber"
               >
-                {film.posterUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={film.posterUrl}
-                    alt={film.title}
-                    className="block h-24 w-16 object-cover"
-                  />
-                ) : (
-                  <span className="flex h-24 w-16 items-center justify-center bg-surface px-1 text-center font-mono text-[9px] text-slate">
-                    {film.slug}
-                  </span>
-                )}
+                {film.slug}
               </Link>
             </li>
           ))}
         </ul>
       ) : (
         <p className="font-mono text-[11px] text-slate">No shared films found.</p>
-      )}
-
-      {hasStats && (
-        <p className="mt-auto border-t border-steel pt-3 font-mono text-xs text-slate">
-          {match.stats!.thisYear != null && `${match.stats!.thisYear} this year`}
-          {match.stats!.thisYear != null && match.stats!.films != null && " · "}
-          {match.stats!.films != null && `${match.stats!.films} films total`}
-        </p>
       )}
     </li>
   );
@@ -697,7 +676,7 @@ function PercentageBadge({ percentage }: { percentage: number }) {
   const hot = percentage >= 75;
   return (
     <span
-      className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 font-display text-base font-bold ${
+      className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full border-2 font-display text-sm font-bold ${
         hot
           ? "border-amber bg-amber text-ink"
           : "border-steel bg-raise text-amber"

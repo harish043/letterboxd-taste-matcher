@@ -92,10 +92,9 @@ const getCachedSearch = unstable_cache(
 
 const getCachedTopFour = unstable_cache(
   async (username: string) => getTopFour(username),
-  ["top-four"],
+  ["top-four", "v2"],
   { revalidate: PROFILE_CACHE_TTL_SECONDS }
 );
-
 const getCachedFansPage = unstable_cache(
   async (slug: string, page: number) => fetchFansPage(slug, page),
   ["fans-page"],
@@ -199,7 +198,20 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { topFour, stats } = await getCachedTopFour(username);
+    const cached = await getCachedTopFour(username);
+    // Normalize defensively: a stale cache entry from an older deploy may have
+    // returned a bare array (old shape) or null. Treat only a real array as
+    // the Top 4.
+    const topFour = Array.isArray(cached)
+      ? cached
+      : Array.isArray(cached?.topFour)
+        ? cached.topFour
+        : [];
+    const stats = cached && !Array.isArray(cached) ? cached.stats : null;
+
+    if (topFour.length < 4) {
+      throw new TooFewFavoritesError(username, topFour.length);
+    }
 
     if (SCRAPE_MODE === "search") {
       // Primary: Letterboxd member-search, one query per film combination,

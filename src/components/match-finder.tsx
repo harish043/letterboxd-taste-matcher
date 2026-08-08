@@ -379,17 +379,23 @@ function Results({ result }: { result: MatchResult }) {
     null
   );
   const [copied, setCopied] = useState(false);
+  // Defensive: tolerate a malformed/legacy payload — a partial scan or an old
+  // cached response should never crash the results view.
+  const matches = Array.isArray(result.matches) ? result.matches : [];
+  const topFour = Array.isArray(result.topFour) ? result.topFour : [];
   // Cumulative: "2+ Matches" includes everyone sharing 2, 3, or 4 films.
   // When a film is selected, only matches that share that film remain.
-  const filteredMatches = result.matches.filter(
+  const filteredMatches = matches.filter(
     (match) =>
-      match.sharedFilms.length >= minMatchFilter &&
+      (Array.isArray(match.sharedFilms) ? match.sharedFilms.length : 0) >=
+        minMatchFilter &&
       (selectedFilmFilter === null ||
-        match.sharedFilms.includes(selectedFilmFilter))
+        (Array.isArray(match.sharedFilms) &&
+          match.sharedFilms.includes(selectedFilmFilter)))
   );
 
   async function copyUsernames() {
-    const text = result.matches.map((m) => m.username).join("\n");
+    const text = matches.map((m) => m.username).join("\n");
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -427,14 +433,14 @@ function Results({ result }: { result: MatchResult }) {
         )}
 
       <FilmFilterStrip
-        films={result.topFour}
+        films={topFour}
         selected={selectedFilmFilter}
         onSelect={setSelectedFilmFilter}
       />
 
-      <MatchDistributionBar matches={result.matches} />
+      <MatchDistributionBar matches={matches} />
 
-      {result.matches.length === 0 ? (
+      {matches.length === 0 ? (
         <p className="mt-10 text-sm leading-7 text-slate">
           No overlapping fans yet. The scan only covers the first few pages of
           each film&rsquo;s fan list &mdash; try a more popular profile.
@@ -478,7 +484,7 @@ function Results({ result }: { result: MatchResult }) {
               >
                 {copied ? "Copied\u2713" : "Copy usernames"}
               </button>
-              <OpenAllLink films={result.topFour} />
+              <OpenAllLink films={topFour} />
             </div>
           </div>
 
@@ -505,7 +511,7 @@ function Results({ result }: { result: MatchResult }) {
               )}
             </p>
           ) : (
-            <MatchCarousel matches={filteredMatches} topFour={result.topFour} />
+            <MatchCarousel matches={filteredMatches} topFour={topFour} />
           )}
         </>
       )}

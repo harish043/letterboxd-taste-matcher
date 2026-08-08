@@ -171,9 +171,13 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof LetterboxdForbiddenError) {
+      // This fires when Letterboxd's Cloudflare challenge persists through all
+      // retries. We can't tell a genuinely private profile from a bot-protection
+      // block, so be honest about both possibilities instead of asserting the
+      // profile is private.
       return Response.json(
         {
-          error: `The profile "${username}" is private or inaccessible. Make sure the profile is public.`,
+          error: `We couldn't access the profile "${username}" — Letterboxd blocked our requests (this can happen if the profile is private, or if bot protection is throttling us). Please try again in a moment.`,
         },
         { status: 403 }
       );

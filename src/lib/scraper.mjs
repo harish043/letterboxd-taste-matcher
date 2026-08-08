@@ -130,6 +130,13 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
     "Sec-Fetch-Mode: navigate",
     "-H",
     "Sec-Fetch-Dest: document",
+    // curl only decompresses when it both sends Accept-Encoding AND is told
+    // to decompress. Without this every page comes back raw — measured ~109KB
+    // vs ~21KB gzip-compressed (5.2x). gzip instead of brotli because Windows
+    // curl lacks the brotli decoder.
+    "-H",
+    "Accept-Encoding: gzip, deflate",
+    "--compressed",
   ];
 
   const curlArgs = [
@@ -282,7 +289,7 @@ export function parseFansPage(html, slug, page) {
  * @param {number} page 1-indexed page number.
  * @returns {Promise<{ usernames: string[], hasNext: boolean, count: number|null }>}
  */
-async function fetchFansPage(slug, page, { attempts = 1 } = {}) {
+export async function fetchFansPage(slug, page, { attempts = 1 } = {}) {
   // Always use the paginated URL form — even for page 1. The bare `/fans/` URL
   // triggers a Cloudflare challenge nearly 100% of the time, while
   // `/fans/page/1/` returns the same content with a 200.
@@ -303,11 +310,18 @@ async function fetchFansPage(slug, page, { attempts = 1 } = {}) {
  * @param {number} [options.maxPagesPerFilm=5] Max fans pages to scan per film.
  * @param {number} [options.delayMs=1500] Politeness delay between requests.
  * @param {number} [options.concurrency=8] Max concurrent proxy requests.
+ * @param {(slug: string, page: number, opts?: { attempts?: number }) => Promise<{ usernames: string[], hasNext: boolean, count: number|null }>} [options.fetchPage]
+ *   Custom per-page fetcher (e.g. a cached wrapper). Defaults to fetchFansPage.
  * @returns {Promise<{ shared: string[], perFilm: Record<string, { count: number|null, pagesFetched: number, scannedPages: number, fans: string[] }> }>}
  */
 export async function getSharedFans(
   slugs,
-  { maxPagesPerFilm = 5, delayMs = 1500, concurrency = 8 } = {}
+  {
+    maxPagesPerFilm = 5,
+    delayMs = 1500,
+    concurrency = 8,
+    fetchPage = fetchFansPage,
+  } = {}
 ) {
   const perFilm = Object.fromEntries(
     slugs.map((slug) => [
@@ -332,7 +346,7 @@ export async function getSharedFans(
       try {
         // Page 1 is load-bearing: it carries the fan count that determines the
         // spread schedule. Give it the full retry budget.
-        const { usernames, hasNext, count } = await fetchFansPage(slug, 1, {
+        const { usernames, hasNext, count } = await fetchPage(slug, 1, {
           attempts: 3,
         });
         return { slug, usernames, hasNext, count };
@@ -383,7 +397,7 @@ export async function getSharedFans(
     while (cursor < tasks.length) {
       const { slug, page } = tasks[cursor++];
       try {
-        const { usernames } = await fetchFansPage(slug, page, { attempts: 1 });
+        const { usernames } = await fetchPage(slug, page, { attempts: 1 });
         for (const username of usernames) perFilm[slug].fans.add(username);
         if (usernames.length > 0) perFilm[slug].pagesFetched += 1;
         perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, page);

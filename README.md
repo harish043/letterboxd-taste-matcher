@@ -24,7 +24,11 @@ Letterboxd sits behind Cloudflare, which serves a "Just a moment…" challenge t
 - **Local (Windows):** the system `curl.exe`
 - **Vercel (Linux):** the system `curl` on PATH
 
-Override the binary with the `LETTERBOXD_CURL_BIN` env var if the runtime lacks curl. No custom/native scraping packages are bundled.
+Overrides and efficiency knobs:
+
+- `LETTERBOXD_CURL_BIN` — override the curl binary if the runtime lacks it.
+- Every fetch requests **gzip** (`Accept-Encoding` + `--compressed`) — cuts each fans page from ~109KB to ~21KB (5.2x less proxy bandwidth).
+- The route caches parsed fan lists and Top 4 lookups with `unstable_cache` (Vercel's data cache), so repeat scans and scans sharing films reuse results instead of paying the proxy again. Only successful fetches are cached — transient proxy failures are never stored.
 
 > **Why a proxy?** Letterboxd's Cloudflare serves a JS-based "Just a moment…" challenge to **all** datacenter egress IPs — AWS (Vercel serverless), Cloudflare Workers, and even WARP tunnels all get challenged regardless of TLS fingerprint. The fix is a **residential proxy** (e.g. proxying.io, ScraperAPI, BrightData): the scraper routes every Letterboxd fetch through `SCRAPER_PROXY`, so egress comes from a residential IP that Letterboxd does not challenge. This works from Vercel directly — no VM needed.
 
@@ -55,7 +59,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ```
 
 - `username` (required) — Letterboxd username, `/^[a-zA-Z0-9_]{1,30}$/`
-- `maxPagesPerFilm` (optional, default 15, capped at 20) — fans page requests per film, spread evenly across the fan list
+- `maxPagesPerFilm` (optional, default 10, capped at 20) — fans page requests per film, spread evenly across the fan list
 - `delayMs` (optional, capped at 10000) — politeness delay between requests
 - `minMatches` (optional, 1–4) — minimum shared films for a match
 
@@ -69,7 +73,14 @@ No VM needed. Set these Production env vars in the Vercel project (Settings → 
 SCRAPER_PROXY=http://USER:PASSWORD@proxy.proxying.io:8080
 ```
 
-`/api/match` then routes every Letterboxd fetch through the residential proxy, whose IP passes Cloudflare.
+Optional cache TTLs (defaults are sane; tune to trade freshness vs proxy spend):
+
+```
+FANS_CACHE_TTL_SECONDS=86400     # parsed fan pages cached for 24h
+PROFILE_CACHE_TTL_SECONDS=3600   # Top 4 lookups cached for 1h
+```
+
+`/api/match` then routes every Letterboxd fetch through the residential proxy, whose IP passes Cloudflare, and caches the parsed results so repeat scans don't re-pay the proxy.
 
 Notes:
 - If you use proxying.io, you can add options by appending `_quality-high` (or `_country-xx`) to the password: `http://user:pass_quality-high@proxy.proxying.io:8080`.

@@ -1,14 +1,15 @@
 import type { Metadata } from "next";
 import {
-  Bricolage_Grotesque,
+  Fraunces,
   Instrument_Sans,
   IBM_Plex_Mono,
 } from "next/font/google";
 import "./globals.css";
 
-const bricolage = Bricolage_Grotesque({
-  variable: "--font-bricolage",
+const fraunces = Fraunces({
+  variable: "--font-fraunces",
   subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
 });
 
 const instrument = Instrument_Sans({
@@ -38,7 +39,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${bricolage.variable} ${instrument.variable} ${plexMono.variable} h-full antialiased`}
+      className={`${fraunces.variable} ${instrument.variable} ${plexMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

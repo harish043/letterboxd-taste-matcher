@@ -4,24 +4,19 @@ export default function Home() {
   return (
     <main className="flex flex-1 flex-col">
       <section className="relative flex flex-1 flex-col items-center overflow-hidden px-6 pb-24 pt-20 sm:pt-28">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute left-1/2 top-[-14rem] h-[30rem] w-[46rem] -translate-x-1/2 rounded-full bg-[radial-gradient(closest-side,rgba(233,161,59,0.16),transparent)]"
-        />
-
         <div className="relative z-10 w-full max-w-2xl text-center">
-          <p className="font-mono text-xs font-medium uppercase tracking-[0.35em] text-slate">
-            Reel Match &middot; Letterboxd taste finder
+          <p className="font-mono text-[11px] font-medium uppercase tracking-[0.4em] text-slate">
+            Reel Match &middot; a Letterboxd taste finder
           </p>
-          <h1 className="mt-6 font-display text-5xl font-extrabold leading-[0.95] tracking-tight text-bone sm:text-7xl">
+          <h1 className="mt-7 font-display text-5xl font-semibold leading-[1.02] tracking-tight text-bone sm:text-7xl">
             Who shares
             <br />
-            your <span className="text-amber">Top&nbsp;4</span>?
+            your <em className="text-amber not-italic">Top&nbsp;4</em>?
           </h1>
-          <p className="mx-auto mt-6 max-w-md text-base leading-7 text-slate">
-            Enter your Letterboxd username. We scan the fans of your four
-            favorite films and surface the profiles that overlap with your
-            taste.
+          <p className="mx-auto mt-7 max-w-md text-base leading-7 text-slate">
+            Type your Letterboxd username. We&rsquo;ll find the people whose
+            favorite films overlap with yours — and tell you exactly how much
+            you match.
           </p>
 
           <MatchFinder />

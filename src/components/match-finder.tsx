@@ -30,10 +30,10 @@ type Status = "idle" | "loading" | "success" | "error";
 const DEFAULT_OPTIONS = { maxPagesPerFilm: 10, delayMs: 0 };
 
 const FILTER_OPTIONS = [
-  { value: 4, label: "4/4 Matches" },
-  { value: 3, label: "3 Matches" },
-  { value: 2, label: "2 Matches" },
-  { value: 1, label: "1 Match" },
+  { value: 2, label: "2+ Matches" },
+  { value: 3, label: "3+ Matches" },
+  { value: 4, label: "4/4 Only" },
+  { value: 1, label: "All (1+)" },
 ];
 
 export default function MatchFinder() {
@@ -104,17 +104,16 @@ export default function MatchFinder() {
                 aria-hidden
                 className="h-2 w-2 animate-pulse rounded-full bg-ink"
               />
-              Scanning fans&hellip;
+              Finding matches&hellip;
             </span>
           ) : (
-            "Find matches"
+            "Find my matches"
           )}
         </button>
       </form>
 
       <p className="mt-4 font-mono text-xs text-slate">
-        e.g. dave &middot; scans the first {DEFAULT_OPTIONS.maxPagesPerFilm}{" "}
-        fan pages of each film
+        e.g. dave &middot; checks the fans of your four favorites
       </p>
 
       {status === "error" && (
@@ -136,10 +135,9 @@ export default function MatchFinder() {
 
 function Results({ result }: { result: MatchResult }) {
   const [minMatchFilter, setMinMatchFilter] = useState(2);
-  // Mutually exclusive: each filter shows matches sharing exactly that many
-  // films (a 50% match never appears in the 25% / 1-match view).
+  // Cumulative: "2+ Matches" includes everyone sharing 2, 3, or 4 films.
   const filteredMatches = result.matches.filter(
-    (match) => match.sharedFilms.length === minMatchFilter
+    (match) => match.sharedFilms.length >= minMatchFilter
   );
 
   return (
@@ -148,7 +146,9 @@ function Results({ result }: { result: MatchResult }) {
         <h2 className="font-display text-3xl font-bold text-bone">
           {filteredMatches.length}{" "}
           {filteredMatches.length === 1 ? "profile" : "profiles"} share{" "}
-          exactly {minMatchFilter} of your Top 4
+          {minMatchFilter >= 2
+            ? `${minMatchFilter}+ of your Top 4`
+            : "your taste"}
         </h2>
         <p className="font-mono text-xs uppercase tracking-[0.25em] text-slate">
           {result.username}
@@ -186,22 +186,23 @@ function Results({ result }: { result: MatchResult }) {
 
           <p className="mt-4 font-mono text-xs text-slate">
             Showing {filteredMatches.length}{" "}
-            {filteredMatches.length === 1 ? "match" : "matches"} sharing exactly{" "}
-            {minMatchFilter} {minMatchFilter === 1 ? "film" : "films"}
+            {filteredMatches.length === 1 ? "match" : "matches"} sharing at
+            least {minMatchFilter}{" "}
+            {minMatchFilter === 1 ? "film" : "films"}
           </p>
 
           {filteredMatches.length === 0 ? (
             <p className="mt-10 text-sm leading-7 text-slate">
               {minMatchFilter >= 2 ? (
                 <>
-                  No profiles share exactly {minMatchFilter} of this user&rsquo;s
-                  Top 4. Strong taste overlap is rare &mdash; try{" "}
+                  No profiles share {minMatchFilter}+ of this user&rsquo;s Top
+                  4. Strong taste overlap is rare &mdash; try{" "}
                   <button
                     type="button"
                     onClick={() => setMinMatchFilter(1)}
                     className="font-medium text-amber underline underline-offset-2 hover:text-bone"
                   >
-                    viewing 1-match profiles
+                    seeing all 1+ matches
                   </button>
                   , or a more popular profile.
                 </>
@@ -235,7 +236,8 @@ function MatchCarousel({ matches }: { matches: Match[] }) {
   }
 
   return (
-    <div className="relative mt-6">
+    <div className="mt-8">
+      <div aria-hidden className="film-rail mb-3" />
       <div className="flex items-center gap-2">
         <CarouselButton
           direction="left"
@@ -244,7 +246,7 @@ function MatchCarousel({ matches }: { matches: Match[] }) {
         />
         <ul
           ref={trackRef}
-          className="carousel-track flex gap-4 overflow-x-auto scroll-smooth pb-2"
+          className="carousel-track flex gap-4 overflow-x-auto py-1"
         >
           {matches.map((match) => (
             <MatchCard key={match.username} match={match} />
@@ -256,6 +258,7 @@ function MatchCarousel({ matches }: { matches: Match[] }) {
           label="Next matches"
         />
       </div>
+      <div aria-hidden className="film-rail mt-3" />
     </div>
   );
 }
@@ -274,8 +277,7 @@ function CarouselButton({
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-steel bg-surface text-bone transition-colors hover:border-amber/60 hover:text-amber"
-    >
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-steel bg-surface text-bone transition-colors hover:border-amber/60 hover:text-amber"    >
       {direction === "left" ? "\u2190" : "\u2192"}
     </button>
   );
@@ -286,7 +288,7 @@ function MatchCard({ match }: { match: Match }) {
   const hasStats = match.stats && (match.stats.films != null || match.stats.thisYear != null);
 
   return (
-    <li className="group flex w-72 shrink-0 flex-col gap-4 rounded-2xl border border-steel bg-surface p-5 transition-colors hover:border-amber/60">
+    <li className="group flex w-80 shrink-0 flex-col gap-4 rounded-2xl border border-steel bg-surface p-6 transition-colors hover:border-amber/50">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           {match.avatar && (
@@ -294,29 +296,23 @@ function MatchCard({ match }: { match: Match }) {
             <img
               src={match.avatar}
               alt=""
-              className="h-9 w-9 shrink-0 rounded-full border border-steel"
+              className="h-11 w-11 shrink-0 rounded-full border-2 border-amber/40 bg-raise"
             />
           )}
           <div className="min-w-0">
-            <p className="truncate font-mono text-sm font-medium text-bone">
+            <p className="truncate font-display text-lg font-semibold leading-tight text-bone">
               <Link
                 href={`https://letterboxd.com/${match.username}`}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="transition-colors hover:text-amber"
               >
-                {match.displayName ? (
-                  <>
-                    {match.displayName}
-                    <span className="ml-1.5 text-xs text-slate">/{match.username}</span>
-                  </>
-                ) : (
-                  `/${match.username}`
-                )}
+                {match.displayName || `/${match.username}`}
               </Link>
             </p>
-            <p className="mt-1 font-mono text-xs text-slate">
-              {shared} shared {shared === 1 ? "film" : "films"}
+            <p className="mt-0.5 truncate font-mono text-[11px] text-slate">
+              /{match.username} &middot; {shared} shared{" "}
+              {shared === 1 ? "film" : "films"}
             </p>
           </div>
         </div>
@@ -330,7 +326,7 @@ function MatchCard({ match }: { match: Match }) {
               href={`https://letterboxd.com/film/${slug}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-block rounded-full border border-amber/30 bg-amber-glow px-2.5 py-1 font-mono text-[11px] text-amber transition-colors hover:border-amber/70 hover:bg-amber/20"
+              className="inline-block rounded-full border border-amber/25 bg-amber-soft px-2.5 py-1 font-mono text-[11px] text-amber transition-colors hover:border-amber/60 hover:bg-amber/15"
             >
               {slug}
             </Link>
@@ -353,9 +349,9 @@ function PercentageBadge({ percentage }: { percentage: number }) {
   const hot = percentage >= 75;
   return (
     <span
-      className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-full border font-display text-xl font-bold ${
+      className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 font-display text-base font-bold ${
         hot
-          ? "border-amber bg-amber text-ink shadow-[0_0_20px_rgba(233,161,59,0.35)]"
+          ? "border-amber bg-amber text-ink"
           : "border-steel bg-raise text-amber"
       }`}
     >

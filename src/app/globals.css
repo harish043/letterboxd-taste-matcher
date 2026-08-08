@@ -1,14 +1,14 @@
 @import "tailwindcss";
 
 :root {
-  --ink: #0a0c0e;
-  --surface: #121417;
-  --raise: #1a1e24;
-  --bone: #f2ede3;
-  --slate: #8e98a3;
-  --steel: #2a313a;
-  --amber: #e9a13b;
-  --amber-glow: rgba(233, 161, 59, 0.14);
+  --ink: #161312;
+  --surface: #201b18;
+  --raise: #2a241f;
+  --bone: #f5e9d8;
+  --slate: #b8a48c;
+  --steel: #3a312a;
+  --amber: #e8a33d;
+  --amber-soft: rgba(232, 163, 61, 0.16);
 }
 
 @theme inline {
@@ -19,9 +19,9 @@
   --color-slate: var(--slate);
   --color-steel: var(--steel);
   --color-amber: var(--amber);
-  --color-amber-glow: var(--amber-glow);
+  --color-amber-soft: var(--amber-soft);
 
-  --font-display: var(--font-bricolage);
+  --font-display: var(--font-fraunces);
   --font-body: var(--font-instrument);
   --font-mono: var(--font-plex);
 }
@@ -32,6 +32,27 @@ body {
   font-family: var(--font-instrument);
 }
 
+/* Visible keyboard focus on interactive elements. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
+
+/* Film-sprocket rail: a row of rounded notches like the edge of a film strip. */
+.film-rail {
+  height: 14px;
+  background-image: radial-gradient(
+    circle at 8px 7px,
+    var(--steel) 3px,
+    transparent 3.5px
+  );
+  background-size: 16px 14px;
+  background-repeat: repeat-x;
+  opacity: 0.85;
+}
+
 /* Hide the horizontal scrollbar on the match carousel track. */
 .carousel-track {
   scrollbar-width: none;
@@ -39,4 +60,10 @@ body {
 }
 .carousel-track::-webkit-scrollbar {
   display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .carousel-track {
+    scroll-behavior: auto;
+  }
 }

@@ -210,47 +210,90 @@ async function fetchHtml(url) {
 }
 
 /**
- * Fetch a Letterboxd profile page and return the URL slugs of the user's
- * Top 4 favorite films.
+ * Fetch a Letterboxd profile page and return the user's Top 4 favorite films,
+ * each with its slug, title, and a poster image URL.
  *
  * @param {string} username Letterboxd username.
- * @returns {Promise<string[]>} Array of 4 film slugs, e.g. ["high-and-low", ...].
+ * @returns {Promise<Array<{ slug: string, title: string, posterUrl: string|null }>>}
+ *   Array of 4 films, e.g. [{ slug: "high-and-low", title: "High and Low (1963)", posterUrl: "https://…" }].
  * @throws {LetterboxdNotFoundError} Profile does not exist.
  * @throws {TooFewFavoritesError} Profile exists with fewer than 4 favorites.
  * @throws {ProxyTimeoutError|ProxyError|CloudflareBlockedError} Transport failure.
  */
-export async function getTopFourSlugs(username) {
+export async function getTopFour(username) {
   const url = `${BASE_URL}/${username}/`;
   const html = await fetchHtml(url);
-  const slugs = parseTopFourSlugs(html);
+  const films = parseTopFour(html);
 
-  if (slugs.length < 4) {
+  if (films.length < 4) {
     // A nonexistent profile returns HTTP 404; distinguish that from a real
     // profile that simply has fewer than four favorites. Letterboxd renders
     // the profile header for existing users even with an empty favourites grid.
     if (html.includes("Letterboxd - Not Found") || !html.includes("profile-header")) {
       throw new LetterboxdNotFoundError(username);
     }
-    throw new TooFewFavoritesError(username, slugs.length);
+    throw new TooFewFavoritesError(username, films.length);
   }
 
-  return slugs;
+  // Resolve a poster for each film. The profile only exposes a JS-resolvable
+  // poster path, so fetch each film page once and read its og:image — that's
+  // a stable CDN URL that returns a real image.
+  const withPosters = await Promise.all(
+    films.map(async (film) => ({
+      ...film,
+      posterUrl: await getFilmPoster(film.slug),
+    }))
+  );
+
+  return withPosters;
 }
 
 /**
- * Extract the URL slugs of a user's Top 4 films from a profile page's HTML.
+ * Extract the slug and title of each of a user's Top 4 films from a profile
+ * page's HTML.
  *
  * @param {string} html Raw profile page HTML.
- * @returns {string[]} Film slugs, e.g. ["high-and-low", ...].
+ * @returns {Array<{ slug: string, title: string }>}
  */
-export function parseTopFourSlugs(html) {
+export function parseTopFour(html) {
   const $ = cheerio.load(html);
-  const slugs = [];
+  const films = [];
   $("#favourites li.griditem div.react-component").each((_, el) => {
     const slug = $(el).attr("data-item-slug");
-    if (slug) slugs.push(slug);
+    const title = $(el).attr("data-item-name") || "";
+    if (slug) films.push({ slug, title });
   });
-  return slugs;
+  return films;
+}
+
+/**
+ * Parse the poster image URL from a film page's og:image meta tag.
+ *
+ * @param {string} html Raw film page HTML.
+ * @returns {string|null} Absolute poster URL, or null if absent.
+ */
+export function parseFilmPoster(html) {
+  const $ = cheerio.load(html);
+  const content =
+    $('meta[property="og:image"]').attr("content") ||
+    $('meta[name="twitter:image"]').attr("content") ||
+    null;
+  return content || null;
+}
+
+/**
+ * Fetch a film page and return its poster URL (og:image).
+ *
+ * @param {string} slug Film slug.
+ * @returns {Promise<string|null>} Poster URL, or null if it can't be found.
+ */
+export async function getFilmPoster(slug) {
+  try {
+    const html = await fetchHtml(`${BASE_URL}/film/${slug}/`, { attempts: 3 });
+    return parseFilmPoster(html);
+  } catch {
+    return null; // poster is cosmetic; never fail the scan for it
+  }
 }
 
 /**
@@ -489,7 +532,10 @@ export async function getSharedFans(
  */
 export async function getProfile(username) {
   const html = await fetchHtml(`${BASE_URL}/${username}/`, { attempts: 3 });
-  const topFour = parseTopFourSlugs(html);
+  const films = parseTopFour(html);
+  // Enrichment only needs slugs for the shared-film intersection — posters are
+  // resolved for the searcher's own Top 4, not for every match's.
+  const topFour = films.map((film) => film.slug);
   if (topFour.length < 4) {
     if (
       html.includes("Letterboxd - Not Found") ||
@@ -509,7 +555,7 @@ export async function getProfile(username) {
  * and enriches each unique match with their display name, avatar, exact shared
  * films, percentage, and activity stats.
  *
- * @param {string[]} topFour The user's Top 4 film slugs.
+ * @param {Array<{ slug: string, title: string, posterUrl: string|null }>} topFour The user's Top 4 films.
  * @param {object} [options]
  * @param {string} [options.excludeUsername] Searcher's username (excluded from results).
  * @param {number} [options.maxTiers=4] Highest tier to search (4, 3, 2, 1).
@@ -528,13 +574,15 @@ export async function searchMatches(
     profile = getProfile,
   } = {}
 ) {
+  const slugs = topFour.map((film) => film.slug);
+
   // Search each tier and dedupe usernames across tiers. Each tier is a distinct
   // query, so a user matching 3 films appears in the 3+ tier but the exact
   // shared-film count is computed below from their real Top 4 — tiers stay
   // mutually exclusive by that exact count.
   const byUsername = new Map();
   for (let tier = maxTiers; tier >= 1; tier--) {
-    const query = buildSearchUrl(topFour, tier);
+    const query = buildSearchUrl(slugs, tier);
     let results;
     try {
       results = await search(query);
@@ -553,15 +601,13 @@ export async function searchMatches(
   for (const result of byUsername.values()) {
     try {
       const { topFour: theirTopFour, stats } = await profile(result.username);
-      const sharedFilms = topFour.filter((slug) =>
-        theirTopFour.includes(slug)
-      );
+      const sharedFilms = slugs.filter((slug) => theirTopFour.includes(slug));
       matches.push({
         username: result.username,
         displayName: result.displayName,
         avatar: result.avatar,
         sharedFilms,
-        percentage: Math.round((sharedFilms.length / topFour.length) * 100),
+        percentage: Math.round((sharedFilms.length / slugs.length) * 100),
         stats,
       });
     } catch {

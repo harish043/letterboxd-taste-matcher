@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  getTopFourSlugs,
+  getTopFour,
   getSharedFans,
   buildMatchResult,
 } from "../src/lib/scraper.mjs";
@@ -107,12 +107,13 @@ async function handleMatch(req, res) {
       : 1;
 
   try {
-    const topFour = await getTopFourSlugs(username);
-    const { perFilm } = await getSharedFans(topFour, {
+    const topFour = await getTopFour(username);
+    const slugs = topFour.map((film) => film.slug);
+    const { perFilm } = await getSharedFans(slugs, {
       maxPagesPerFilm,
       delayMs,
     });
-    const { matches, scanned } = buildMatchResult(topFour, perFilm, minMatches);
+    const { matches, scanned } = buildMatchResult(slugs, perFilm, minMatches);
 
     sendJson(res, 200, {
       username,

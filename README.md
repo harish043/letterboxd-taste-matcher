@@ -53,7 +53,7 @@ Open [http://localhost:3000](http://localhost:3000).
 - `delayMs` (optional, capped at 10000) — politeness delay between requests
 - `minMatches` (optional, 1–4) — minimum shared films for a match
 
-Returns `{ username, topFour, matchCount, matches, scanned }`.
+Returns `{ username, topFour, matchCount, matches, scanned }`, where each `topFour` entry is `{ slug, title, posterUrl }` (poster resolved from the film's og:image; poster fetches are cached 24h).
 
 ## Production setup (Vercel + residential proxy)
 

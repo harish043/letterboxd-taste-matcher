@@ -1,5 +1,5 @@
 import {
-  getTopFourSlugs,
+  getTopFour,
   getSharedFans,
   fetchFansPage,
   buildMatchResult,
@@ -98,7 +98,7 @@ const getCachedProfile = unstable_cache(
 );
 
 const getCachedTopFour = unstable_cache(
-  async (username: string) => getTopFourSlugs(username),
+  async (username: string) => getTopFour(username),
   ["top-four"],
   { revalidate: PROFILE_CACHE_TTL_SECONDS }
 );
@@ -229,14 +229,15 @@ export async function POST(request: Request) {
     }
 
     // Fallback: fan-page scraping (SCRAPE_MODE=pages).
-    const { perFilm } = await getSharedFans(topFour, {
+    const topFourSlugs = topFour.map((film) => film.slug);
+    const { perFilm } = await getSharedFans(topFourSlugs, {
       maxPagesPerFilm,
       delayMs,
       concurrency: DEFAULT_CONCURRENCY,
       fetchPage: getCachedFansPage,
     });
 
-    const { matches, scanned } = buildMatchResult(topFour, perFilm, minMatches);
+    const { matches, scanned } = buildMatchResult(topFourSlugs, perFilm, minMatches);
 
     return Response.json({
       username,

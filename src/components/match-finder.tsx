@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 type Match = {
@@ -12,6 +12,12 @@ type Match = {
   stats?: { films: number | null; thisYear: number | null };
 };
 
+type Film = {
+  slug: string;
+  title: string;
+  posterUrl: string | null;
+};
+
 type ScannedFilm = {
   totalFans: number | null;
   scannedPages: number;
@@ -19,7 +25,7 @@ type ScannedFilm = {
 
 type MatchResult = {
   username: string;
-  topFour: string[];
+  topFour: Film[];
   matchCount: number;
   matches: Match[];
   scanned: Record<string, ScannedFilm> | null;
@@ -36,11 +42,28 @@ const FILTER_OPTIONS = [
   { value: 1, label: "All (1+)" },
 ];
 
+const LOADING_STEPS = [
+  "Fetching profile\u2026",
+  "Scanning fan pages\u2026",
+  "Cross-referencing cinema twins\u2026",
+  "Almost there\u2026",
+];
+
 export default function MatchFinder() {
   const [username, setUsername] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<MatchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loadingStep, setLoadingStep] = useState(0);
+
+  // Cycle through the loading steps every 4s while a scan is running.
+  useEffect(() => {
+    if (status !== "loading") return;
+    const id = setInterval(() => {
+      setLoadingStep((step) => (step + 1) % LOADING_STEPS.length);
+    }, 4000);
+    return () => clearInterval(id);
+  }, [status]);
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -104,7 +127,7 @@ export default function MatchFinder() {
                 aria-hidden
                 className="h-2 w-2 animate-pulse rounded-full bg-ink"
               />
-              Finding matches&hellip;
+              {LOADING_STEPS[loadingStep]}
             </span>
           ) : (
             "Find my matches"
@@ -133,11 +156,75 @@ export default function MatchFinder() {
   );
 }
 
+function FilmFilterStrip({
+  films,
+  selected,
+  onSelect,
+}: {
+  films: Film[];
+  selected: string | null;
+  onSelect: (slug: string | null) => void;
+}) {
+  return (
+    <div className="mt-8">
+      <p className="font-mono text-xs uppercase tracking-[0.3em] text-slate">
+        Filter by a favorite film
+      </p>
+      <div className="mt-3 flex flex-wrap gap-3">
+        {films.map((film) => {
+          const isSelected = selected === film.slug;
+          return (
+            <button
+              key={film.slug}
+              type="button"
+              onClick={() => onSelect(isSelected ? null : film.slug)}
+              aria-pressed={isSelected}
+              title={film.title}
+              className={`group relative overflow-hidden rounded-lg border-2 transition-all ${
+                isSelected
+                  ? "border-amber ring-2 ring-amber"
+                  : "border-steel hover:border-amber/60"
+              }`}
+            >
+              {film.posterUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={film.posterUrl}
+                  alt={film.title}
+                  className="block h-28 w-[4.6rem] object-cover"
+                />
+              ) : (
+                <span className="flex h-28 w-[4.6rem] items-center justify-center bg-surface px-1 text-center font-mono text-[10px] text-slate">
+                  {film.slug}
+                </span>
+              )}
+              <span
+                className={`absolute inset-x-0 bottom-0 truncate bg-ink/80 px-1 py-0.5 text-center font-mono text-[9px] ${
+                  isSelected ? "text-amber" : "text-slate"
+                }`}
+              >
+                {film.title.split(" (")[0]}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Results({ result }: { result: MatchResult }) {
   const [minMatchFilter, setMinMatchFilter] = useState(2);
+  const [selectedFilmFilter, setSelectedFilmFilter] = useState<string | null>(
+    null
+  );
   // Cumulative: "2+ Matches" includes everyone sharing 2, 3, or 4 films.
+  // When a film is selected, only matches that share that film remain.
   const filteredMatches = result.matches.filter(
-    (match) => match.sharedFilms.length >= minMatchFilter
+    (match) =>
+      match.sharedFilms.length >= minMatchFilter &&
+      (selectedFilmFilter === null ||
+        match.sharedFilms.includes(selectedFilmFilter))
   );
 
   return (
@@ -154,6 +241,12 @@ function Results({ result }: { result: MatchResult }) {
           {result.username}
         </p>
       </div>
+
+      <FilmFilterStrip
+        films={result.topFour}
+        selected={selectedFilmFilter}
+        onSelect={setSelectedFilmFilter}
+      />
 
       {result.matches.length === 0 ? (
         <p className="mt-10 text-sm leading-7 text-slate">
@@ -214,7 +307,7 @@ function Results({ result }: { result: MatchResult }) {
               )}
             </p>
           ) : (
-            <MatchCarousel matches={filteredMatches} />
+            <MatchCarousel matches={filteredMatches} topFour={result.topFour} />
           )}
         </>
       )}
@@ -224,7 +317,13 @@ function Results({ result }: { result: MatchResult }) {
   );
 }
 
-function MatchCarousel({ matches }: { matches: Match[] }) {
+function MatchCarousel({
+  matches,
+  topFour,
+}: {
+  matches: Match[];
+  topFour: Film[];
+}) {
   const trackRef = useRef<HTMLUListElement>(null);
 
   function scrollByCards(direction: number) {
@@ -249,7 +348,7 @@ function MatchCarousel({ matches }: { matches: Match[] }) {
           className="carousel-track flex gap-4 overflow-x-auto py-1"
         >
           {matches.map((match) => (
-            <MatchCard key={match.username} match={match} />
+            <MatchCard key={match.username} match={match} topFour={topFour} />
           ))}
         </ul>
         <CarouselButton
@@ -283,9 +382,19 @@ function CarouselButton({
   );
 }
 
-function MatchCard({ match }: { match: Match }) {
+function MatchCard({
+  match,
+  topFour,
+}: {
+  match: Match;
+  topFour: Film[];
+}) {
   const shared = match.sharedFilms.length;
   const hasStats = match.stats && (match.stats.films != null || match.stats.thisYear != null);
+  const filmsBySlug = new Map(topFour.map((film) => [film.slug, film]));
+  const sharedFilms = match.sharedFilms
+    .map((slug) => filmsBySlug.get(slug))
+    .filter((film): film is Film => Boolean(film));
 
   return (
     <li className="group flex w-80 shrink-0 flex-col gap-4 rounded-2xl border border-steel bg-surface p-6 transition-colors hover:border-amber/50">
@@ -319,20 +428,35 @@ function MatchCard({ match }: { match: Match }) {
         <PercentageBadge percentage={match.percentage} />
       </div>
 
-      <ul className="flex flex-wrap gap-1.5">
-        {match.sharedFilms.map((slug) => (
-          <li key={slug}>
-            <Link
-              href={`https://letterboxd.com/film/${slug}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block rounded-full border border-amber/25 bg-amber-soft px-2.5 py-1 font-mono text-[11px] text-amber transition-colors hover:border-amber/60 hover:bg-amber/15"
-            >
-              {slug}
-            </Link>
-          </li>
-        ))}
-      </ul>
+      {sharedFilms.length > 0 ? (
+        <ul className="flex flex-wrap gap-2">
+          {sharedFilms.map((film) => (
+            <li key={film.slug} title={film.title}>
+              <Link
+                href={`https://letterboxd.com/film/${film.slug}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block overflow-hidden rounded border border-steel transition-colors hover:border-amber/60"
+              >
+                {film.posterUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={film.posterUrl}
+                    alt={film.title}
+                    className="block h-24 w-16 object-cover"
+                  />
+                ) : (
+                  <span className="flex h-24 w-16 items-center justify-center bg-surface px-1 text-center font-mono text-[9px] text-slate">
+                    {film.slug}
+                  </span>
+                )}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="font-mono text-[11px] text-slate">No shared films found.</p>
+      )}
 
       {hasStats && (
         <p className="mt-auto border-t border-steel pt-3 font-mono text-xs text-slate">

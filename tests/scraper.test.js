@@ -5,8 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  parseTopFourSlugs,
+  parseTopFour,
   parseFansPage,
+  parseFilmPoster,
   buildMatchResult,
   buildFansPageUrl,
   buildSearchUrl,
@@ -37,19 +38,29 @@ test("generateSessionId returns unique sticky-session ids", () => {
   }
 });
 
-test("parseTopFourSlugs extracts the 4 favorite film slugs", () => {
+test("parseTopFour extracts slug and title for the 4 favorite films", () => {
   const html = fixtures("profile-favourites.html");
-  const slugs = parseTopFourSlugs(html);
-  assert.deepEqual(slugs, [
-    "high-and-low",
-    "burning-2018",
-    "my-neighbor-totoro",
-    "mulholland-drive",
+  const films = parseTopFour(html);
+  assert.deepEqual(films, [
+    { slug: "high-and-low", title: "High and Low (1963)" },
+    { slug: "burning-2018", title: "Burning (2018)" },
+    { slug: "my-neighbor-totoro", title: "My Neighbor Totoro (1988)" },
+    { slug: "mulholland-drive", title: "Mulholland Drive (2001)" },
   ]);
 });
 
-test("parseTopFourSlugs returns [] when no favourites section", () => {
-  assert.deepEqual(parseTopFourSlugs("<html><body></body></html>"), []);
+test("parseTopFour returns [] when no favourites section", () => {
+  assert.deepEqual(parseTopFour("<html><body></body></html>"), []);
+});
+
+test("parseFilmPoster extracts the og:image poster URL", () => {
+  const html = fixtures("film-page.html");
+  const poster = parseFilmPoster(html);
+  assert.match(poster, /^https:\/\/a\.ltrbxd\.com\/resized\/sm\/upload\//);
+});
+
+test("parseFilmPoster returns null when no og:image", () => {
+  assert.equal(parseFilmPoster("<html><body></body></html>"), null);
 });
 
 test("parseFansPage extracts usernames, count, and next-page link", () => {

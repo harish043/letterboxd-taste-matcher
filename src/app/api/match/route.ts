@@ -5,7 +5,6 @@ import {
   buildMatchResult,
   searchMatches,
   searchMembers,
-  getProfile,
   LetterboxdNotFoundError,
   TooFewFavoritesError,
   CloudflareBlockedError,
@@ -71,10 +70,10 @@ function checkRateLimit(ip: string): number | null {
 }
 // ----------------------------------------------------------------------------
 
-// Search results and profile enrichment are cached because member-search
-// queries are stable (a film's fans change slowly) and profile fetches repeat
-// across scans. `unstable_cache` (not `use cache`) because the latter's default
-// in-memory handler does not persist across serverless requests on Vercel.
+// Search results and Top-4 lookups are cached because member-search queries
+// are stable (a film's fans change slowly). `unstable_cache` (not `use cache`)
+// because the latter's default in-memory handler does not persist across
+// serverless requests on Vercel.
 const FANS_CACHE_TTL_SECONDS = Number(
   process.env.FANS_CACHE_TTL_SECONDS ?? 86400
 );
@@ -89,12 +88,6 @@ const getCachedSearch = unstable_cache(
   async (query: string) => searchMembers(query),
   ["member-search"],
   { revalidate: FANS_CACHE_TTL_SECONDS }
-);
-
-const getCachedProfile = unstable_cache(
-  async (username: string) => getProfile(username),
-  ["profile"],
-  { revalidate: PROFILE_CACHE_TTL_SECONDS }
 );
 
 const getCachedTopFour = unstable_cache(
@@ -209,14 +202,13 @@ export async function POST(request: Request) {
     const topFour = await getCachedTopFour(username);
 
     if (SCRAPE_MODE === "search") {
-      // Primary: Letterboxd member-search finds users sharing the Top 4 films.
-      // Searches all tiers, excludes the searcher's own profile, and enriches
-      // each match with their real Top 4 + activity stats so cards show exact
-      // shared films and percentages (tiers are mutually exclusive).
+      // Primary: Letterboxd member-search, one query per film combination,
+      // finds users sharing the Top 4 films. Exact shared films are derived
+      // from which combination queries each match appears in — no per-match
+      // profile fetches.
       const { matches } = await searchMatches(topFour, {
         excludeUsername: username,
         search: getCachedSearch,
-        profile: getCachedProfile,
       });
 
       return Response.json({

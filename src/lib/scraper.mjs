@@ -549,71 +549,78 @@ export async function getProfile(username) {
 }
 
 /**
- * Find users who share the given Top 4 films, using Letterboxd's member-search
- * engine. Searches every tier (4/4, 3+, 2+, 1+) so results are mutually
- * exclusive by exact shared-film count, excludes the searcher's own profile,
- * and enriches each unique match with their display name, avatar, exact shared
- * films, percentage, and activity stats.
+ * Find users who share the given Top 4 films using only Letterboxd's
+ * member-search engine — no per-match profile fetches. Runs one discrete query
+ * per film combination (6 pairs + 4 triples + 1 quad). A member returned by a
+ * combination is a fan of every film in it, so unioning the combo films across
+ * queries yields each match's exact shared-film set. Excludes the searcher.
  *
  * @param {Array<{ slug: string, title: string, posterUrl: string|null }>} topFour The user's Top 4 films.
  * @param {object} [options]
  * @param {string} [options.excludeUsername] Searcher's username (excluded from results).
- * @param {number} [options.maxTiers=4] Highest tier to search (4, 3, 2, 1).
  * @param {(query: string) => Promise<Array<{ username: string, displayName: string, avatar: string|null }>>} [options.search]
  *   Injectable search fetcher (defaults to searchMembers).
- * @param {(username: string) => Promise<{ topFour: string[], stats: { films: number|null, thisYear: number|null } }>} [options.profile]
- *   Injectable profile fetcher (defaults to getProfile), used to enrich matches.
- * @returns {Promise<{ matches: Array<{ username: string, displayName: string, avatar: string|null, sharedFilms: string[], percentage: number, stats: { films: number|null, thisYear: number|null } }> }>}
+ * @returns {Promise<{ matches: Array<{ username: string, displayName: string, avatar: string|null, sharedFilms: string[], percentage: number }> }>}
  */
 export async function searchMatches(
   topFour,
-  {
-    excludeUsername = null,
-    maxTiers = 4,
-    search = searchMembers,
-    profile = getProfile,
-  } = {}
+  { excludeUsername = null, search = searchMembers } = {}
 ) {
   const slugs = topFour.map((film) => film.slug);
 
-  // Search each tier and dedupe usernames across tiers. Each tier is a distinct
-  // query, so a user matching 3 films appears in the 3+ tier but the exact
-  // shared-film count is computed below from their real Top 4 — tiers stay
-  // mutually exclusive by that exact count.
-  const byUsername = new Map();
-  for (let tier = maxTiers; tier >= 1; tier--) {
-    const query = buildSearchUrl(slugs, tier);
-    let results;
-    try {
-      results = await search(query);
-    } catch {
-      continue; // a failing tier shouldn't sink the whole scan
+  // Every combination of the films, sizes 2..4. Each is a discrete AND query;
+  // a member in the result is a fan of every film in that combination.
+  const combos = [];
+  const pick = (start, depth, chosen) => {
+    if (chosen.length === depth) {
+      combos.push(chosen);
+      return;
     }
-    for (const result of results) {
-      if (excludeUsername && result.username === excludeUsername) continue;
-      if (!byUsername.has(result.username)) {
-        byUsername.set(result.username, result);
-      }
+    for (let i = start; i < slugs.length; i++) {
+      pick(i + 1, depth, [...chosen, slugs[i]]);
     }
+  };
+  for (let depth = 2; depth <= Math.min(4, slugs.length); depth++) {
+    pick(0, depth, []);
   }
 
-  const matches = [];
-  for (const result of byUsername.values()) {
-    try {
-      const { topFour: theirTopFour, stats } = await profile(result.username);
-      const sharedFilms = slugs.filter((slug) => theirTopFour.includes(slug));
-      matches.push({
-        username: result.username,
-        displayName: result.displayName,
-        avatar: result.avatar,
+  const queries = combos.map((combo) => ({
+    combo,
+    url: `${BASE_URL}/s/search/members/(${combo.map((s) => `fan:${s}`).join("+")})/`,
+  }));
+
+  // Fire every query in parallel; a failing query just yields fewer matches.
+  const settled = await Promise.allSettled(queries.map((q) => search(q.url)));
+
+  const byUsername = new Map();
+  settled.forEach((result, i) => {
+    if (result.status !== "fulfilled") return;
+    const combo = queries[i].combo;
+    for (const member of result.value) {
+      if (excludeUsername && member.username === excludeUsername) continue;
+      const entry = byUsername.get(member.username) ?? {
+        username: member.username,
+        displayName: member.displayName,
+        avatar: member.avatar,
+        films: new Set(),
+      };
+      for (const slug of combo) entry.films.add(slug);
+      byUsername.set(member.username, entry);
+    }
+  });
+
+  const matches = [...byUsername.values()].map(
+    ({ username, displayName, avatar, films }) => {
+      const sharedFilms = slugs.filter((slug) => films.has(slug));
+      return {
+        username,
+        displayName,
+        avatar,
         sharedFilms,
         percentage: Math.round((sharedFilms.length / slugs.length) * 100),
-        stats,
-      });
-    } catch {
-      // Profile fetch failed (proxy hiccup / rare). Skip the match.
+      };
     }
-  }
+  );
 
   return { matches };
 }

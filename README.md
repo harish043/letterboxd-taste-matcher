@@ -1,13 +1,13 @@
 # Letterboxd Taste Matcher
 
-A Next.js app that finds Letterboxd users who share your taste. Enter a username, and it finds users whose favorite films overlap with yours, ranked by match percentage — with exact shared films and activity stats on every match.
+A Next.js app that finds Letterboxd users who share your taste. Enter a username, and it finds users whose favorite films overlap with yours, ranked by match percentage — with exact shared films on every match.
 
 ## How it works
 
-1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** film slugs.
-2. It then queries **Letterboxd's own member-search engine** with `fan:<film>` operators OR'd together (e.g. `(fan:A+fan:B) OR (fan:A+fan:C) …`) — one request per match tier, which finds every member whose Top 4 overlaps with ≥2 of yours. This is far cheaper and more complete than scraping fan pages.
-3. Each match's profile is fetched to compute the **exact shared films**, **match percentage**, and **activity stats** (films logged this year, total films).
-4. `POST /api/match` returns the enriched matches; the UI filters by minimum shared films (2+ / 3+ / 4/4).
+1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** films (slug, title, poster).
+2. It then queries **Letterboxd's own member-search engine** once per film combination — 6 pairs, 4 triples, 1 quad — using `fan:<film>` AND operators. This is far cheaper and faster than scraping fan pages or fetching each match's profile.
+3. A member returned by a combination is a fan of every film in it, so unioning the combo films across queries yields each match's **exact shared films** and **match percentage** — no per-match profile fetches needed.
+4. `POST /api/match` returns the matches; the UI filters by minimum shared films (2+ / 3+ / 4/4) and by a specific favorite film.
 
 ### Scraping transport
 

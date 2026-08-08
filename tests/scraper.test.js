@@ -38,14 +38,14 @@ test("generateSessionId returns unique sticky-session ids", () => {
   }
 });
 
-test("parseTopFour extracts slug and title for the 4 favorite films", () => {
+test("parseTopFour extracts slug, title, and year for the 4 favorite films", () => {
   const html = fixtures("profile-favourites.html");
   const films = parseTopFour(html);
   assert.deepEqual(films, [
-    { slug: "high-and-low", title: "High and Low (1963)" },
-    { slug: "burning-2018", title: "Burning (2018)" },
-    { slug: "my-neighbor-totoro", title: "My Neighbor Totoro (1988)" },
-    { slug: "mulholland-drive", title: "Mulholland Drive (2001)" },
+    { slug: "high-and-low", title: "High and Low (1963)", year: "1963" },
+    { slug: "burning-2018", title: "Burning (2018)", year: "2018" },
+    { slug: "my-neighbor-totoro", title: "My Neighbor Totoro (1988)", year: "1988" },
+    { slug: "mulholland-drive", title: "Mulholland Drive (2001)", year: "2001" },
   ]);
 });
 
@@ -140,7 +140,7 @@ test("buildSearchUrl builds triples for 3+ and a single AND for 4/4", () => {
   );
 });
 
-test("parseSearchResults extracts username, display name, and avatar", () => {
+test("parseSearchResults extracts username, display name, avatar, and badge", () => {
   const html = fixtures("search-results.html");
   const results = parseSearchResults(html);
   assert.equal(results.length, 20);
@@ -152,6 +152,10 @@ test("parseSearchResults extracts username, display name, and avatar", () => {
     assert.ok(r.username.length > 0);
     assert.ok(r.displayName.length > 0);
   }
+  // the fixture has a Pro badge on matthistory; display name excludes it
+  const matthistory = results.find((r) => r.username === "matthistory");
+  assert.equal(matthistory?.badge, "Pro");
+  assert.equal(matthistory?.displayName, "Matt");
 });
 
 test("parseProfileStats extracts films and this-year diary counts", () => {

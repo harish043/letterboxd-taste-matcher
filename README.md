@@ -4,10 +4,23 @@ A Next.js app that finds Letterboxd users who share your taste. Enter a username
 
 ## How it works
 
-1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** films (slug, title, poster).
+1. `src/lib/scraper.mjs` fetches a user's profile page and extracts their **Top 4** films (slug, title, release year, poster) plus their profile stats.
 2. It then queries **Letterboxd's own member-search engine** once per film combination — 6 pairs, 4 triples, 1 quad — using `fan:<film>` AND operators. This is far cheaper and faster than scraping fan pages or fetching each match's profile.
-3. A member returned by a combination is a fan of every film in it, so unioning the combo films across queries yields each match's **exact shared films** and **match percentage** — no per-match profile fetches needed.
+3. A member returned by a combination is a fan of every film in it, so unioning the combo films across queries yields each match's **exact shared films** and **match percentage** — no per-match profile fetches needed. Matches also carry Pro/Patron badges from the search results.
 4. `POST /api/match` returns the matches; the UI filters by minimum shared films (2+ / 3+ / 4/4) and by a specific favorite film.
+
+## Zero-request features
+
+Everything below runs client-side or reuses HTML already fetched — no extra proxy requests:
+
+- **Deep links** — scans are shareable via `?username=` and auto-run on load.
+- **Recent history chips** — the 5 most recent usernames are stored in `localStorage` for one-tap re-scans.
+- **Restore last result** — the last successful result is cached locally and restored instantly on revisit.
+- **Match distribution bar** — how many matches share exactly 4/3/2/1 films.
+- **Copy usernames** — copy all matched usernames to the clipboard.
+- **View all on Letterboxd** — link to Letterboxd's native member search for all four films.
+- **Searcher stats** — the user's own films-logged-this-year / total-films counts, parsed from their profile.
+- **Carousel a11y** — arrow-key scrolling on the film strip and match carousel.
 
 ### Scraping transport
 

@@ -210,12 +210,11 @@ async function fetchHtml(url) {
 }
 
 /**
- * Fetch a Letterboxd profile page and return the user's Top 4 favorite films,
- * each with its slug, title, and a poster image URL.
+ * Fetch a Letterboxd profile page and return the user's Top 4 favorite films
+ * (slug, title, release year, poster URL) plus their profile stats.
  *
  * @param {string} username Letterboxd username.
- * @returns {Promise<Array<{ slug: string, title: string, posterUrl: string|null }>>}
- *   Array of 4 films, e.g. [{ slug: "high-and-low", title: "High and Low (1963)", posterUrl: "https://…" }].
+ * @returns {Promise<{ topFour: Array<{ slug: string, title: string, year: string|null, posterUrl: string|null }>, stats: { films: number|null, thisYear: number|null } }>}
  * @throws {LetterboxdNotFoundError} Profile does not exist.
  * @throws {TooFewFavoritesError} Profile exists with fewer than 4 favorites.
  * @throws {ProxyTimeoutError|ProxyError|CloudflareBlockedError} Transport failure.
@@ -238,22 +237,26 @@ export async function getTopFour(username) {
   // Resolve a poster for each film. The profile only exposes a JS-resolvable
   // poster path, so fetch each film page once and read its og:image — that's
   // a stable CDN URL that returns a real image.
-  const withPosters = await Promise.all(
+  const topFour = await Promise.all(
     films.map(async (film) => ({
       ...film,
       posterUrl: await getFilmPoster(film.slug),
     }))
   );
 
-  return withPosters;
+  // Stats come from the same profile HTML we already fetched — no extra call.
+  const stats = parseProfileStats(html);
+
+  return { topFour, stats };
 }
 
 /**
- * Extract the slug and title of each of a user's Top 4 films from a profile
- * page's HTML.
+ * Extract the slug, title, and release year of each of a user's Top 4 films
+ * from a profile page's HTML. The year is parsed from the title's trailing
+ * "(YYYY)" segment (e.g. "High and Low (1963)" -> "1963").
  *
  * @param {string} html Raw profile page HTML.
- * @returns {Array<{ slug: string, title: string }>}
+ * @returns {Array<{ slug: string, title: string, year: string|null }>}
  */
 export function parseTopFour(html) {
   const $ = cheerio.load(html);
@@ -261,7 +264,8 @@ export function parseTopFour(html) {
   $("#favourites li.griditem div.react-component").each((_, el) => {
     const slug = $(el).attr("data-item-slug");
     const title = $(el).attr("data-item-name") || "";
-    if (slug) films.push({ slug, title });
+    const yearMatch = String(title).match(/\((\d{4})\)\s*$/);
+    if (slug) films.push({ slug, title, year: yearMatch ? yearMatch[1] : null });
   });
   return films;
 }
@@ -382,10 +386,11 @@ export function buildSearchUrl(slugs, minMatches = 2) {
 /**
  * Parse a member-search results page (the AJAX fragment returned by
  * `/s/search/members/.../`). Each result is a `li.search-result -person` with
- * the username in `.metadata` and display name + avatar in `.name` / `.avatar`.
+ * the username in `.metadata`, display name + badge in `.name`, and avatar in
+ * `.avatar`.
  *
  * @param {string} html Raw search-results HTML.
- * @returns {Array<{ username: string, displayName: string, avatar: string|null }>}
+ * @returns {Array<{ username: string, displayName: string, avatar: string|null, badge: string|null }>}
  */
 export function parseSearchResults(html) {
   const $ = cheerio.load(html);
@@ -394,12 +399,16 @@ export function parseSearchResults(html) {
     const href = $(el).find("a.name").attr("href");
     if (!href) return;
     const username = href.replace(/^\//, "").replace(/\/$/, "");
-    const displayName = $(el).find("a.name").text().trim();
+    const nameEl = $(el).find("a.name");
+    // Keep only the display name text (badge sits inside the same <a>).
+    const displayName = nameEl.clone().find("span.badge").remove().end().text().trim();
+    const badge =
+      nameEl.find("span.badge").first().text().trim() || null;
     const avatar =
       $(el).find("a.avatar img").attr("src") ||
       $(el).find(".avatar img").attr("src") ||
       null;
-    results.push({ username, displayName, avatar });
+    results.push({ username, displayName, avatar, badge });
   });
   return results;
 }
@@ -555,7 +564,7 @@ export async function getProfile(username) {
  * combination is a fan of every film in it, so unioning the combo films across
  * queries yields each match's exact shared-film set. Excludes the searcher.
  *
- * @param {Array<{ slug: string, title: string, posterUrl: string|null }>} topFour The user's Top 4 films.
+ * @param {Array<{ slug: string, title: string, year: string|null, posterUrl: string|null }>} topFour The user's Top 4 films.
  * @param {object} [options]
  * @param {string} [options.excludeUsername] Searcher's username (excluded from results).
  * @param {(query: string) => Promise<Array<{ username: string, displayName: string, avatar: string|null }>>} [options.search]
@@ -602,6 +611,7 @@ export async function searchMatches(
         username: member.username,
         displayName: member.displayName,
         avatar: member.avatar,
+        badge: member.badge ?? null,
         films: new Set(),
       };
       for (const slug of combo) entry.films.add(slug);
@@ -610,12 +620,13 @@ export async function searchMatches(
   });
 
   const matches = [...byUsername.values()].map(
-    ({ username, displayName, avatar, films }) => {
+    ({ username, displayName, avatar, badge, films }) => {
       const sharedFilms = slugs.filter((slug) => films.has(slug));
       return {
         username,
         displayName,
         avatar,
+        badge,
         sharedFilms,
         percentage: Math.round((sharedFilms.length / slugs.length) * 100),
       };

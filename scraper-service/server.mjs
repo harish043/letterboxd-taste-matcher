@@ -107,7 +107,7 @@ async function handleMatch(req, res) {
       : 1;
 
   try {
-    const topFour = await getTopFour(username);
+    const { topFour, stats } = await getTopFour(username);
     const slugs = topFour.map((film) => film.slug);
     const { perFilm } = await getSharedFans(slugs, {
       maxPagesPerFilm,
@@ -118,6 +118,7 @@ async function handleMatch(req, res) {
     sendJson(res, 200, {
       username,
       topFour,
+      stats,
       matchCount: matches.length,
       matches,
       scanned,

@@ -7,6 +7,7 @@ type Match = {
   username: string;
   displayName?: string;
   avatar?: string | null;
+  badge?: string | null;
   sharedFilms: string[];
   percentage: number;
   stats?: { films: number | null; thisYear: number | null };
@@ -15,6 +16,7 @@ type Match = {
 type Film = {
   slug: string;
   title: string;
+  year?: string | null;
   posterUrl: string | null;
 };
 
@@ -26,6 +28,7 @@ type ScannedFilm = {
 type MatchResult = {
   username: string;
   topFour: Film[];
+  stats?: { films: number | null; thisYear: number | null };
   matchCount: number;
   matches: Match[];
   scanned: Record<string, ScannedFilm> | null;
@@ -49,12 +52,33 @@ const LOADING_STEPS = [
   "Almost there\u2026",
 ];
 
+const HISTORY_KEY = "tm:history";
+const LAST_KEY = "tm:last";
+
+function readStorage(key: string): unknown {
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStorage(key: string, value: unknown): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // storage unavailable (private mode / quota); features degrade gracefully
+  }
+}
+
 export default function MatchFinder() {
   const [username, setUsername] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [result, setResult] = useState<MatchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingStep, setLoadingStep] = useState(0);
+  const [history, setHistory] = useState<string[]>([]);
 
   // Cycle through the loading steps every 4s while a scan is running.
   useEffect(() => {
@@ -65,11 +89,39 @@ export default function MatchFinder() {
     return () => clearInterval(id);
   }, [status]);
 
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const name = username.trim();
-    if (!name) return;
+  // On mount: restore history chips; either deep-link from ?username= or
+  // restore the last cached result (never both). Deferred via a microtask so
+  // state isn't set synchronously during the effect (avoids a hydration
+  // mismatch — server renders the idle state, then we hydrate the cache).
+  useEffect(() => {
+    queueMicrotask(() => {
+      const storedHistory = readStorage(HISTORY_KEY);
+      if (Array.isArray(storedHistory)) {
+        setHistory(storedHistory.slice(0, 5));
+      }
 
+      const params = new URLSearchParams(window.location.search);
+      const deepLink = params.get("username");
+      if (deepLink) {
+        setUsername(deepLink);
+        runScan(deepLink);
+        return;
+      }
+
+      const last = readStorage(LAST_KEY) as
+        | { username?: string; result?: MatchResult }
+        | null;
+      if (last?.result) {
+        setUsername(last.username ?? "");
+        setResult(last.result);
+        setStatus("success");
+      }
+    });
+  }, []);
+
+  async function runScan(name: string) {
+    if (!name) return;
+    setUsername(name);
     setStatus("loading");
     setError(null);
     setResult(null);
@@ -90,10 +142,32 @@ export default function MatchFinder() {
 
       setResult(data as MatchResult);
       setStatus("success");
+
+      // Deep-link the successful result.
+      window.history.replaceState(
+        null,
+        "",
+        `?username=${encodeURIComponent(name)}`
+      );
+
+      // Update recent-history chips.
+      setHistory((prev) => {
+        const next = [name, ...prev.filter((h) => h !== name)].slice(0, 5);
+        writeStorage(HISTORY_KEY, next);
+        return next;
+      });
+
+      // Cache the last result so a plain revisit restores it instantly.
+      writeStorage(LAST_KEY, { username: name, result: data as MatchResult });
     } catch {
       setError("Could not reach the server. Try again in a moment.");
       setStatus("error");
     }
+  }
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    runScan(username.trim());
   }
 
   return (
@@ -139,6 +213,21 @@ export default function MatchFinder() {
         e.g. dave &middot; checks the fans of your four favorites
       </p>
 
+      {history.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+          {history.map((name) => (
+            <button
+              key={name}
+              type="button"
+              onClick={() => runScan(name)}
+              className="rounded-full border border-steel bg-surface px-3 py-1 font-mono text-xs text-slate transition-colors hover:border-amber/60 hover:text-amber"
+            >
+              /{name}
+            </button>
+          ))}
+        </div>
+      )}
+
       {status === "error" && (
         <p
           role="alert"
@@ -165,12 +254,34 @@ function FilmFilterStrip({
   selected: string | null;
   onSelect: (slug: string | null) => void;
 }) {
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  function handleStripKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const buttons = Array.from(
+      stripRef.current?.querySelectorAll<HTMLButtonElement>("button") ?? []
+    );
+    if (buttons.length === 0) return;
+    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    if (index === -1) return;
+    event.preventDefault();
+    const next =
+      event.key === "ArrowRight"
+        ? (index + 1) % buttons.length
+        : (index - 1 + buttons.length) % buttons.length;
+    buttons[next].focus();
+  }
+
   return (
     <div className="mt-8">
       <p className="font-mono text-xs uppercase tracking-[0.3em] text-slate">
         Filter by a favorite film
       </p>
-      <div className="mt-3 flex flex-wrap gap-3">
+      <div
+        ref={stripRef}
+        onKeyDown={handleStripKeyDown}
+        className="mt-3 flex flex-wrap gap-3"
+      >
         {films.map((film) => {
           const isSelected = selected === film.slug;
           return (
@@ -204,6 +315,7 @@ function FilmFilterStrip({
                 }`}
               >
                 {film.title.split(" (")[0]}
+                {film.year ? ` (${film.year})` : ""}
               </span>
             </button>
           );
@@ -213,11 +325,60 @@ function FilmFilterStrip({
   );
 }
 
+function MatchDistributionBar({ matches }: { matches: Match[] }) {
+  const counts = { 4: 0, 3: 0, 2: 0, 1: 0 } as Record<number, number>;
+  for (const match of matches) {
+    const n = match.sharedFilms.length;
+    if (n >= 1 && n <= 4) counts[n] += 1;
+  }
+  const total = Math.max(1, matches.length);
+
+  return (
+    <div className="mt-8">
+      <div className="flex h-2 overflow-hidden rounded-full bg-raise">
+        {([4, 3, 2, 1] as const).map((n) => (
+          <div
+            key={n}
+            style={{ width: `${(counts[n] / total) * 100}%` }}
+            className={`${n === 4 ? "bg-amber" : n === 3 ? "bg-amber/70" : n === 2 ? "bg-amber/40" : "bg-amber/20"}`}
+          />
+        ))}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 font-mono text-[11px] text-slate">
+        {([4, 3, 2, 1] as const).map((n) => (
+          <span key={n}>
+            <span className="text-amber">{counts[n]}</span> share {n}
+            {n === 1 ? " film" : " films"}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OpenAllLink({ films }: { films: Film[] }) {
+  const slugs = films.map((f) => f.slug);
+  if (slugs.length === 0) return null;
+  const query = `(${slugs.map((s) => `fan:${s}`).join("+")})`;
+  const url = `https://letterboxd.com/search/members/${query}/`;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="rounded-full border border-amber/30 bg-amber-soft px-3 py-1.5 font-mono text-xs text-amber transition-colors hover:border-amber/70 hover:bg-amber/15"
+    >
+      View all matches on Letterboxd
+    </a>
+  );
+}
+
 function Results({ result }: { result: MatchResult }) {
   const [minMatchFilter, setMinMatchFilter] = useState(2);
   const [selectedFilmFilter, setSelectedFilmFilter] = useState<string | null>(
     null
   );
+  const [copied, setCopied] = useState(false);
   // Cumulative: "2+ Matches" includes everyone sharing 2, 3, or 4 films.
   // When a film is selected, only matches that share that film remain.
   const filteredMatches = result.matches.filter(
@@ -226,6 +387,17 @@ function Results({ result }: { result: MatchResult }) {
       (selectedFilmFilter === null ||
         match.sharedFilms.includes(selectedFilmFilter))
   );
+
+  async function copyUsernames() {
+    const text = result.matches.map((m) => m.username).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // clipboard unavailable; do nothing
+    }
+  }
 
   return (
     <div className="mt-14 w-full max-w-5xl">
@@ -242,11 +414,25 @@ function Results({ result }: { result: MatchResult }) {
         </p>
       </div>
 
+      {result.stats &&
+        (result.stats.films != null || result.stats.thisYear != null) && (
+          <p className="mt-3 font-mono text-xs text-slate">
+            {result.stats.thisYear != null &&
+              `${result.stats.thisYear} films logged this year`}
+            {result.stats.thisYear != null &&
+              result.stats.films != null &&
+              " \u00b7 "}
+            {result.stats.films != null && `${result.stats.films} films total`}
+          </p>
+        )}
+
       <FilmFilterStrip
         films={result.topFour}
         selected={selectedFilmFilter}
         onSelect={setSelectedFilmFilter}
       />
+
+      <MatchDistributionBar matches={result.matches} />
 
       {result.matches.length === 0 ? (
         <p className="mt-10 text-sm leading-7 text-slate">
@@ -277,12 +463,24 @@ function Results({ result }: { result: MatchResult }) {
             ))}
           </div>
 
-          <p className="mt-4 font-mono text-xs text-slate">
-            Showing {filteredMatches.length}{" "}
-            {filteredMatches.length === 1 ? "match" : "matches"} sharing at
-            least {minMatchFilter}{" "}
-            {minMatchFilter === 1 ? "film" : "films"}
-          </p>
+          <div className="mt-4 flex flex-wrap items-center gap-4">
+            <p className="font-mono text-xs text-slate">
+              Showing {filteredMatches.length}{" "}
+              {filteredMatches.length === 1 ? "match" : "matches"} sharing at
+              least {minMatchFilter}{" "}
+              {minMatchFilter === 1 ? "film" : "films"}
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={copyUsernames}
+                className="rounded-full border border-steel bg-surface px-3 py-1.5 font-mono text-xs text-slate transition-colors hover:border-amber/60 hover:text-amber"
+              >
+                {copied ? "Copied\u2713" : "Copy usernames"}
+              </button>
+              <OpenAllLink films={result.topFour} />
+            </div>
+          </div>
 
           {filteredMatches.length === 0 ? (
             <p className="mt-10 text-sm leading-7 text-slate">
@@ -334,6 +532,16 @@ function MatchCarousel({
     track.scrollBy({ left: direction * step, behavior: "smooth" });
   }
 
+  function handleTrackKeyDown(event: React.KeyboardEvent<HTMLUListElement>) {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      scrollByCards(-1);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      scrollByCards(1);
+    }
+  }
+
   return (
     <div className="mt-8">
       <div aria-hidden className="film-rail mb-3" />
@@ -345,7 +553,10 @@ function MatchCarousel({
         />
         <ul
           ref={trackRef}
-          className="carousel-track flex gap-4 overflow-x-auto py-1"
+          tabIndex={0}
+          onKeyDown={handleTrackKeyDown}
+          aria-label="Match results (use arrow keys to scroll)"
+          className="carousel-track flex gap-4 overflow-x-auto py-1 focus-visible:outline-none"
         >
           {matches.map((match) => (
             <MatchCard key={match.username} match={match} topFour={topFour} />
@@ -418,6 +629,11 @@ function MatchCard({
               >
                 {match.displayName || `/${match.username}`}
               </Link>
+              {match.badge && (
+                <span className="ml-1.5 rounded border border-amber/40 bg-amber-soft px-1 py-0.5 align-middle font-mono text-[9px] uppercase tracking-wide text-amber">
+                  {match.badge}
+                </span>
+              )}
             </p>
             <p className="mt-0.5 truncate font-mono text-[11px] text-slate">
               /{match.username} &middot; {shared} shared{" "}

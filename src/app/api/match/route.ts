@@ -199,7 +199,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const topFour = await getCachedTopFour(username);
+    const { topFour, stats } = await getCachedTopFour(username);
 
     if (SCRAPE_MODE === "search") {
       // Primary: Letterboxd member-search, one query per film combination,
@@ -214,6 +214,7 @@ export async function POST(request: Request) {
       return Response.json({
         username,
         topFour,
+        stats,
         matchCount: matches.length,
         matches,
         scanned: null,
@@ -234,6 +235,7 @@ export async function POST(request: Request) {
     return Response.json({
       username,
       topFour,
+      stats,
       matchCount: matches.length,
       matches,
       scanned,

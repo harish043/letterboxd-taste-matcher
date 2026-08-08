@@ -209,11 +209,12 @@ export async function POST(request: Request) {
     const topFour = await getCachedTopFour(username);
 
     if (SCRAPE_MODE === "search") {
-      // Primary: Letterboxd member-search finds users sharing >= minMatches
-      // films. Enrich each match with their real Top 4 + activity stats so
-      // cards can show exact shared films and percentages.
+      // Primary: Letterboxd member-search finds users sharing the Top 4 films.
+      // Searches all tiers, excludes the searcher's own profile, and enriches
+      // each match with their real Top 4 + activity stats so cards show exact
+      // shared films and percentages (tiers are mutually exclusive).
       const { matches } = await searchMatches(topFour, {
-        minMatches,
+        excludeUsername: username,
         search: getCachedSearch,
         profile: getCachedProfile,
       });

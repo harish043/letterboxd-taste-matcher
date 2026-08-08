@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Link from "next/link";
 
 type Match = {
@@ -30,10 +30,10 @@ type Status = "idle" | "loading" | "success" | "error";
 const DEFAULT_OPTIONS = { maxPagesPerFilm: 10, delayMs: 0 };
 
 const FILTER_OPTIONS = [
-  { value: 2, label: "2+ Matches" },
-  { value: 3, label: "3+ Matches" },
-  { value: 4, label: "4/4 Only" },
-  { value: 1, label: "All (1+)" },
+  { value: 4, label: "4/4 Matches" },
+  { value: 3, label: "3 Matches" },
+  { value: 2, label: "2 Matches" },
+  { value: 1, label: "1 Match" },
 ];
 
 export default function MatchFinder() {
@@ -136,8 +136,10 @@ export default function MatchFinder() {
 
 function Results({ result }: { result: MatchResult }) {
   const [minMatchFilter, setMinMatchFilter] = useState(2);
+  // Mutually exclusive: each filter shows matches sharing exactly that many
+  // films (a 50% match never appears in the 25% / 1-match view).
   const filteredMatches = result.matches.filter(
-    (match) => match.sharedFilms.length >= minMatchFilter
+    (match) => match.sharedFilms.length === minMatchFilter
   );
 
   return (
@@ -146,9 +148,7 @@ function Results({ result }: { result: MatchResult }) {
         <h2 className="font-display text-3xl font-bold text-bone">
           {filteredMatches.length}{" "}
           {filteredMatches.length === 1 ? "profile" : "profiles"} share{" "}
-          {minMatchFilter >= 2
-            ? `${minMatchFilter}+ of your Top 4`
-            : "your taste"}
+          exactly {minMatchFilter} of your Top 4
         </h2>
         <p className="font-mono text-xs uppercase tracking-[0.25em] text-slate">
           {result.username}
@@ -186,22 +186,22 @@ function Results({ result }: { result: MatchResult }) {
 
           <p className="mt-4 font-mono text-xs text-slate">
             Showing {filteredMatches.length}{" "}
-            {filteredMatches.length === 1 ? "match" : "matches"} with at least{" "}
-            {minMatchFilter} shared {minMatchFilter === 1 ? "film" : "films"}
+            {filteredMatches.length === 1 ? "match" : "matches"} sharing exactly{" "}
+            {minMatchFilter} {minMatchFilter === 1 ? "film" : "films"}
           </p>
 
           {filteredMatches.length === 0 ? (
             <p className="mt-10 text-sm leading-7 text-slate">
               {minMatchFilter >= 2 ? (
                 <>
-                  No profiles share {minMatchFilter}+ of this user&rsquo;s Top 4.
-                  Strong taste overlap is rare &mdash; try{" "}
+                  No profiles share exactly {minMatchFilter} of this user&rsquo;s
+                  Top 4. Strong taste overlap is rare &mdash; try{" "}
                   <button
                     type="button"
                     onClick={() => setMinMatchFilter(1)}
                     className="font-medium text-amber underline underline-offset-2 hover:text-bone"
                   >
-                    lowering to 1+ films
+                    viewing 1-match profiles
                   </button>
                   , or a more popular profile.
                 </>
@@ -213,11 +213,7 @@ function Results({ result }: { result: MatchResult }) {
               )}
             </p>
           ) : (
-            <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {filteredMatches.map((match) => (
-                <MatchCard key={match.username} match={match} />
-              ))}
-            </ul>
+            <MatchCarousel matches={filteredMatches} />
           )}
         </>
       )}
@@ -227,12 +223,70 @@ function Results({ result }: { result: MatchResult }) {
   );
 }
 
+function MatchCarousel({ matches }: { matches: Match[] }) {
+  const trackRef = useRef<HTMLUListElement>(null);
+
+  function scrollByCards(direction: number) {
+    const track = trackRef.current;
+    if (!track) return;
+    const card = track.querySelector("li");
+    const step = card ? card.getBoundingClientRect().width + 16 : 320;
+    track.scrollBy({ left: direction * step, behavior: "smooth" });
+  }
+
+  return (
+    <div className="relative mt-6">
+      <div className="flex items-center gap-2">
+        <CarouselButton
+          direction="left"
+          onClick={() => scrollByCards(-1)}
+          label="Previous matches"
+        />
+        <ul
+          ref={trackRef}
+          className="carousel-track flex gap-4 overflow-x-auto scroll-smooth pb-2"
+        >
+          {matches.map((match) => (
+            <MatchCard key={match.username} match={match} />
+          ))}
+        </ul>
+        <CarouselButton
+          direction="right"
+          onClick={() => scrollByCards(1)}
+          label="Next matches"
+        />
+      </div>
+    </div>
+  );
+}
+
+function CarouselButton({
+  direction,
+  onClick,
+  label,
+}: {
+  direction: "left" | "right";
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-steel bg-surface text-bone transition-colors hover:border-amber/60 hover:text-amber"
+    >
+      {direction === "left" ? "\u2190" : "\u2192"}
+    </button>
+  );
+}
+
 function MatchCard({ match }: { match: Match }) {
   const shared = match.sharedFilms.length;
   const hasStats = match.stats && (match.stats.films != null || match.stats.thisYear != null);
 
   return (
-    <li className="group flex flex-col gap-4 rounded-2xl border border-steel bg-surface p-5 transition-colors hover:border-amber/60">
+    <li className="group flex w-72 shrink-0 flex-col gap-4 rounded-2xl border border-steel bg-surface p-5 transition-colors hover:border-amber/60">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           {match.avatar && (

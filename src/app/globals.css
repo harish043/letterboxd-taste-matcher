@@ -31,3 +31,12 @@ body {
   color: var(--bone);
   font-family: var(--font-instrument);
 }
+
+/* Hide the horizontal scrollbar on the match carousel track. */
+.carousel-track {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.carousel-track::-webkit-scrollbar {
+  display: none;
+}

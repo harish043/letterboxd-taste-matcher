@@ -503,30 +503,54 @@ export async function getProfile(username) {
 }
 
 /**
- * Find users who share at least `minMatches` of the given Top 4 films, using
- * Letterboxd's member-search engine. Returns matches with their display name,
- * avatar, exact shared films (from each match's real Top 4), percentage, and
- * activity stats.
+ * Find users who share the given Top 4 films, using Letterboxd's member-search
+ * engine. Searches every tier (4/4, 3+, 2+, 1+) so results are mutually
+ * exclusive by exact shared-film count, excludes the searcher's own profile,
+ * and enriches each unique match with their display name, avatar, exact shared
+ * films, percentage, and activity stats.
  *
  * @param {string[]} topFour The user's Top 4 film slugs.
  * @param {object} [options]
- * @param {number} [options.minMatches=2] Minimum shared films.
+ * @param {string} [options.excludeUsername] Searcher's username (excluded from results).
+ * @param {number} [options.maxTiers=4] Highest tier to search (4, 3, 2, 1).
  * @param {(query: string) => Promise<Array<{ username: string, displayName: string, avatar: string|null }>>} [options.search]
- *   Injectable search fetcher (defaults to raw parseSearchResults over the URL).
+ *   Injectable search fetcher (defaults to searchMembers).
  * @param {(username: string) => Promise<{ topFour: string[], stats: { films: number|null, thisYear: number|null } }>} [options.profile]
  *   Injectable profile fetcher (defaults to getProfile), used to enrich matches.
  * @returns {Promise<{ matches: Array<{ username: string, displayName: string, avatar: string|null, sharedFilms: string[], percentage: number, stats: { films: number|null, thisYear: number|null } }> }>}
  */
 export async function searchMatches(
   topFour,
-  { minMatches = 2, search = searchMembers, profile = getProfile } = {}
+  {
+    excludeUsername = null,
+    maxTiers = 4,
+    search = searchMembers,
+    profile = getProfile,
+  } = {}
 ) {
-  const query = buildSearchUrl(topFour, minMatches);
-  const results = await search(query);
+  // Search each tier and dedupe usernames across tiers. Each tier is a distinct
+  // query, so a user matching 3 films appears in the 3+ tier but the exact
+  // shared-film count is computed below from their real Top 4 — tiers stay
+  // mutually exclusive by that exact count.
+  const byUsername = new Map();
+  for (let tier = maxTiers; tier >= 1; tier--) {
+    const query = buildSearchUrl(topFour, tier);
+    let results;
+    try {
+      results = await search(query);
+    } catch {
+      continue; // a failing tier shouldn't sink the whole scan
+    }
+    for (const result of results) {
+      if (excludeUsername && result.username === excludeUsername) continue;
+      if (!byUsername.has(result.username)) {
+        byUsername.set(result.username, result);
+      }
+    }
+  }
 
   const matches = [];
-  for (const result of results) {
-    // Skip the user themselves — searching for their own Top 4 returns them.
+  for (const result of byUsername.values()) {
     try {
       const { topFour: theirTopFour, stats } = await profile(result.username);
       const sharedFilms = topFour.filter((slug) =>

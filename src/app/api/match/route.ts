@@ -19,6 +19,52 @@ const MAX_PAGES_PER_FILM = 20;
 const DEFAULT_PAGES_PER_FILM = 10;
 const DEFAULT_CONCURRENCY = 8;
 
+// --- Rate limiting ----------------------------------------------------------
+// In-memory sliding-window limiter keyed by client IP. Vercel serverless
+// instances are per-invocation, so this is best-effort (each instance keeps its
+// own counter and instances can run in parallel) — but it comfortably blunts a
+// feedback spike from Reddit without adding a distributed store. The heavy
+// operation here is the residential-proxy scrape, so throttling requests
+// protects the proxy budget.
+const RATE_LIMIT_MAX = 5; // requests per window per IP
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+/** ip -> sorted request timestamps (ms) within the current window. */
+const rateLimitHits = new Map<string, number[]>();
+
+function clientIp(request: Request): string {
+  const fwd = request.headers.get("x-forwarded-for");
+  if (fwd) return fwd.split(",")[0].trim();
+  return "unknown";
+}
+
+/**
+ * Record a request for the given IP. Returns the Retry-After (seconds) if the
+ * request is over the limit, otherwise null and records the request.
+ */
+function checkRateLimit(ip: string): number | null {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+  const recent = (rateLimitHits.get(ip) ?? []).filter(
+    (t) => t > windowStart
+  );
+
+  if (recent.length >= RATE_LIMIT_MAX) {
+    const oldest = recent[0];
+    const retryAfter = Math.max(
+      1,
+      Math.ceil((oldest + RATE_LIMIT_WINDOW_MS - now) / 1000)
+    );
+    rateLimitHits.set(ip, recent);
+    return retryAfter;
+  }
+
+  recent.push(now);
+  rateLimitHits.set(ip, recent);
+  return null;
+}
+// ----------------------------------------------------------------------------
+
 // Fan lists change slowly (only when users edit their Top 4), so cache each
 // parsed (slug, page) for a day by default. Every scan that touches a cached
 // film reuses these instead of paying the residential proxy again. Only
@@ -30,9 +76,10 @@ const FANS_CACHE_TTL_SECONDS = Number(
   process.env.FANS_CACHE_TTL_SECONDS ?? 86400
 );
 // A user's Top 4 changes less often still, but people do edit it — keep it
-// fresher than the fan lists.
+// fresher than the fan lists (30 min; long enough to cache, short enough that
+// adding a 4th favorite is reflected quickly).
 const PROFILE_CACHE_TTL_SECONDS = Number(
-  process.env.PROFILE_CACHE_TTL_SECONDS ?? 3600
+  process.env.PROFILE_CACHE_TTL_SECONDS ?? 1800
 );
 
 const getCachedFansPage = unstable_cache(
@@ -48,6 +95,18 @@ const getCachedTopFour = unstable_cache(
 );
 
 export async function POST(request: Request) {
+  const ip = clientIp(request);
+  const retryAfter = checkRateLimit(ip);
+  if (retryAfter !== null) {
+    return Response.json(
+      {
+        error:
+          "Too many requests from your network. Please wait a few minutes and try again.",
+      },
+      { status: 429, headers: { "Retry-After": String(retryAfter) } }
+    );
+  }
+
   let body: {
     username?: string;
     maxPagesPerFilm?: number;

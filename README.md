@@ -64,10 +64,12 @@ Optional cache TTLs (defaults are sane; tune to trade freshness vs proxy spend):
 
 ```
 FANS_CACHE_TTL_SECONDS=86400     # parsed fan pages cached for 24h
-PROFILE_CACHE_TTL_SECONDS=3600   # Top 4 lookups cached for 1h
+PROFILE_CACHE_TTL_SECONDS=1800   # Top 4 lookups cached for 30 min
 ```
 
 `/api/match` routes every Letterboxd fetch through the residential proxy, whose IP passes Cloudflare, and caches the parsed results (`unstable_cache`, Vercel's data cache) so repeat scans and scans sharing films don't re-pay the proxy. Only successful fetches are cached — transient failures are never stored.
+
+Rate limiting: `POST /api/match` is limited to **5 requests per 10 minutes per IP** (sliding window, keyed on `x-forwarded-for`), returning `429` + `Retry-After` on exceed. The limiter is in-process — best-effort on serverless, but enough to blunt traffic spikes and protect the proxy budget.
 
 Notes:
 - If you use proxying.io, you can add options by appending `_quality-high` (or `_country-xx`) to the password: `http://user:pass_quality-high@proxy.proxying.io:8080`.

@@ -577,8 +577,10 @@ export async function searchMatches(
 ) {
   const slugs = topFour.map((film) => film.slug);
 
-  // Every combination of the films, sizes 2..4. Each is a discrete AND query;
-  // a member in the result is a fan of every film in that combination.
+  // Every combination of the films, sizes 1..4. Each is a discrete AND query;
+  // a member in the result is a fan of every film in that combination. Depth 1
+  // (single films) is included so users sharing exactly one film are found too
+  // — otherwise the 1-film tier would always be empty.
   const combos = [];
   const pick = (start, depth, chosen) => {
     if (chosen.length === depth) {
@@ -589,7 +591,7 @@ export async function searchMatches(
       pick(i + 1, depth, [...chosen, slugs[i]]);
     }
   };
-  for (let depth = 2; depth <= Math.min(4, slugs.length); depth++) {
+  for (let depth = 1; depth <= Math.min(4, slugs.length); depth++) {
     pick(0, depth, []);
   }
 

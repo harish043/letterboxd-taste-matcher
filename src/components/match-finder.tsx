@@ -359,7 +359,9 @@ function MatchDistributionBar({ matches }: { matches: Match[] }) {
 function OpenAllLink({ films }: { films: Film[] }) {
   const slugs = films.map((f) => f.slug);
   if (slugs.length === 0) return null;
-  const query = `(${slugs.map((s) => `fan:${s}`).join("+")})`;
+  // OR the four singles so the link surfaces every user who is a fan of at
+  // least one of the four films, regardless of the active tier filter.
+  const query = slugs.map((s) => `(fan:${s})`).join("%20OR%20");
   const url = `https://letterboxd.com/search/members/${query}/`;
   return (
     <a

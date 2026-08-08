@@ -140,6 +140,11 @@ test("buildSearchUrl builds triples for 3+ and a single AND for 4/4", () => {
   );
 });
 
+test("buildSearchUrl ORs the singles for 1+ matches", () => {
+  const singles = buildSearchUrl(["a", "b", "c", "d"], 1);
+  assert.match(singles, /\(fan:a\)%20OR%20\(fan:b\)%20OR%20\(fan:c\)%20OR%20\(fan:d\)/);
+});
+
 test("parseSearchResults extracts username, display name, avatar, and badge", () => {
   const html = fixtures("search-results.html");
   const results = parseSearchResults(html);

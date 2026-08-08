@@ -46,13 +46,11 @@ Open [http://localhost:3000](http://localhost:3000).
 ```
 
 - `username` (required) — Letterboxd username, `/^[a-zA-Z0-9_]{1,30}$/`
-- `maxPagesPerFilm` (optional, capped at 3) — fans pages scanned per film
+- `maxPagesPerFilm` (optional, default 10, capped at 20) — fans pages scanned per film
 - `delayMs` (optional, capped at 10000) — politeness delay between requests
 - `minMatches` (optional, 1–4) — minimum shared films for a match
 
 Returns `{ username, topFour, matchCount, matches, scanned }`.
-
-When `SCRAPER_FETCH_URL` is set (Vercel env var), the scraper routes every Letterboxd fetch through the Cloudflare Worker relay instead of scraping from the serverless function.
 
 ## Production setup (Vercel + residential proxy)
 
@@ -62,11 +60,18 @@ No VM needed. Set these Production env vars in the Vercel project (Settings → 
 SCRAPER_PROXY=http://USER:PASSWORD@proxy.proxying.io:8080
 ```
 
-`/api/match` then routes every Letterboxd fetch through the residential proxy, whose IP passes Cloudflare.
+Optional cache TTLs (defaults are sane; tune to trade freshness vs proxy spend):
+
+```
+FANS_CACHE_TTL_SECONDS=86400     # parsed fan pages cached for 24h
+PROFILE_CACHE_TTL_SECONDS=3600   # Top 4 lookups cached for 1h
+```
+
+`/api/match` routes every Letterboxd fetch through the residential proxy, whose IP passes Cloudflare, and caches the parsed results (`unstable_cache`, Vercel's data cache) so repeat scans and scans sharing films don't re-pay the proxy. Only successful fetches are cached — transient failures are never stored.
 
 Notes:
 - If you use proxying.io, you can add options by appending `_quality-high` (or `_country-xx`) to the password: `http://user:pass_quality-high@proxy.proxying.io:8080`.
-- For higher rate limits or more concurrent scans, a paid plan (or a proxy with sticky sessions) helps — some providers rotate IPs per request, which can occasionally re-trigger Cloudflare.
+- The scraper pins a sticky proxy session per process and **rotates to a fresh session** whenever Cloudflare challenges or the proxy drops the connection, so a flagged IP is abandoned instead of failing every retry.
 - The `SCRAPER_TOKEN`/`SCRAPER_URL` env vars are only needed for the (now optional) scraper VM setup below.
 
 ## Optional: scraper VM (not required)

@@ -312,7 +312,7 @@ export function buildFansPageUrl(slug, page) {
  * @param {number} page 1-indexed page number.
  * @returns {Promise<{ usernames: string[], hasNext: boolean, count: number|null }>}
  */
-async function fetchFansPage(slug, page) {
+export async function fetchFansPage(slug, page) {
   const html = await fetchHtml(buildFansPageUrl(slug, page));
   return parseFansPage(html, slug, page);
 }
@@ -326,11 +326,18 @@ async function fetchFansPage(slug, page) {
  * @param {number} [options.maxPagesPerFilm=5] Max fans pages to scan per film.
  * @param {number} [options.delayMs=1500] Politeness delay between requests.
  * @param {number} [options.concurrency=8] Max concurrent proxy requests.
+ * @param {(slug: string, page: number) => Promise<{ usernames: string[], hasNext: boolean, count: number|null }>} [options.fetchPage]
+ *   Per-page fetcher, injectable for caching. Defaults to fetchFansPage.
  * @returns {Promise<{ shared: string[], perFilm: Record<string, { count: number|null, scannedPages: number, fans: string[] }> }>}
  */
 export async function getSharedFans(
   slugs,
-  { maxPagesPerFilm = 5, delayMs = 1500, concurrency = 8 } = {}
+  {
+    maxPagesPerFilm = 5,
+    delayMs = 1500,
+    concurrency = 8,
+    fetchPage = fetchFansPage,
+  } = {}
 ) {
   const perFilm = Object.fromEntries(
     slugs.map((slug) => [
@@ -356,7 +363,7 @@ export async function getSharedFans(
       const { slug, page } = task;
       if (perFilm[slug].done) continue; // skip once the film has no more pages
       try {
-        const { usernames, hasNext, count } = await fetchFansPage(slug, page);
+        const { usernames, hasNext, count } = await fetchPage(slug, page);
         if (perFilm[slug].done) continue; // lost a race with page 1's hasNext
         for (const username of usernames) perFilm[slug].fans.add(username);
         if (count != null) perFilm[slug].count = count;

@@ -4,7 +4,7 @@ import {
   buildMatchResult,
   LetterboxdNotFoundError,
   TooFewFavoritesError,
-  LetterboxdForbiddenError,
+  CloudflareBlockedError,
   ProxyTimeoutError,
   ProxyError,
 } from "@/lib/scraper.mjs";
@@ -137,12 +137,15 @@ export async function POST(request: Request) {
       );
     }
 
-    if (error instanceof LetterboxdForbiddenError) {
+    if (error instanceof CloudflareBlockedError) {
+      // Upstream protection (Cloudflare) throttled our proxy egress after all
+      // retries. This is rate-limiting, not the profile being private.
       return Response.json(
         {
-          error: `The profile "${username}" is private or inaccessible. Make sure the profile is public.`,
+          error:
+            "The scraper was temporarily rate-limited by upstream protection. Please try again in a few moments.",
         },
-        { status: 403 }
+        { status: 429 }
       );
     }
 

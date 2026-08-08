@@ -4,10 +4,35 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { parseTopFourSlugs, parseFansPage, buildMatchResult } from "../src/lib/scraper.mjs";
+import {
+  parseTopFourSlugs,
+  parseFansPage,
+  buildMatchResult,
+  buildFansPageUrl,
+  generateSessionId,
+} from "../src/lib/scraper.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const fixtures = (name) => readFileSync(path.join(__dirname, "fixtures", name), "utf8");
+
+test("buildFansPageUrl always uses the paginated form", () => {
+  assert.equal(
+    buildFansPageUrl("pulp-fiction", 1),
+    "https://letterboxd.com/film/pulp-fiction/fans/page/1/"
+  );
+  assert.equal(
+    buildFansPageUrl("pulp-fiction", 2),
+    "https://letterboxd.com/film/pulp-fiction/fans/page/2/"
+  );
+});
+
+test("generateSessionId returns unique sticky-session ids", () => {
+  const seen = new Set([generateSessionId(), generateSessionId(), generateSessionId()]);
+  assert.equal(seen.size, 3);
+  for (const id of seen) {
+    assert.match(id, /^[a-z0-9]+-[a-z0-9]{4}$/);
+  }
+});
 
 test("parseTopFourSlugs extracts the 4 favorite film slugs", () => {
   const html = fixtures("profile-favourites.html");

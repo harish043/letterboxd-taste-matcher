@@ -18,16 +18,27 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 // Stable per-process id used to pin a sticky proxy session across requests.
 const STICKY_SESSION_ID = Date.now().toString(36);
 
+/**
+ * Generate a fresh proxy session id. Called when a sticky session's IP gets
+ * flagged by Cloudflare, so the next attempt abandons the dead IP and lets the
+ * proxy assign a new one.
+ *
+ * @returns {string} e.g. "m1abcde-9f3k"
+ */
+export function generateSessionId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+}
+
 // proxying.io sticky sessions: append `_session-<id>` to the password so the
 // proxy keeps the same egress IP for the lifetime of this process. If the URL
 // already carries a session option, leave it untouched.
-function applyStickySession(proxyUrl) {
+function applyStickySession(proxyUrl, sessionId = STICKY_SESSION_ID) {
   if (!proxyUrl) return proxyUrl;
   if (/_session-[A-Za-z0-9]+/.test(proxyUrl)) return proxyUrl;
   const match = proxyUrl.match(/^(https?:\/\/)([^:/@]+):([^@]*)@(.*)$/);
   if (!match) return proxyUrl;
   const [, scheme, user, pass, host] = match;
-  return `${scheme}${user}:${pass}_session-${STICKY_SESSION_ID}@${host}`;
+  return `${scheme}${user}:${pass}_session-${sessionId}@${host}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,11 +63,15 @@ export class TooFewFavoritesError extends Error {
   }
 }
 
-/** Cloudflare blocked the request (403) after retries — private/inaccessible. */
-export class LetterboxdForbiddenError extends Error {
-  constructor(username) {
-    super(`Profile "${username}" is private or inaccessible.`);
-    this.name = "LetterboxdForbiddenError";
+/**
+ * Cloudflare served a challenge/403 that persisted through all retries. This
+ * is throttling/rate-limiting of the proxy egress, NOT proof the profile is
+ * private — distinguish it so users aren't told their profile is inaccessible.
+ */
+export class CloudflareBlockedError extends Error {
+  constructor(url) {
+    super(`Upstream protection blocked request to ${url}.`);
+    this.name = "CloudflareBlockedError";
   }
 }
 
@@ -106,10 +121,12 @@ function resolveCurlBinary() {
  *
  * @param {string} url
  * @returns {Promise<string>} The HTML body.
- * @throws {ProxyTimeoutError|ProxyError|LetterboxdForbiddenError}
+ * @throws {ProxyTimeoutError|ProxyError|CloudflareBlockedError}
  */
 async function fetchHtml(url) {
-  const proxy = applyStickySession(process.env.SCRAPER_PROXY);
+  const baseProxy = process.env.SCRAPER_PROXY;
+  // Start with the process's sticky session; rotate on block (see below).
+  let sessionId = STICKY_SESSION_ID;
 
   const browserHeaders = [
     "-H",
@@ -126,9 +143,12 @@ async function fetchHtml(url) {
     "Sec-Fetch-Dest: document",
   ];
 
-  const curlArgs = [
+  const buildCurlArgs = (proxy) => [
     "-sS", // silent, but surface errors
     "--http1.1",
+    // Request gzip/deflate and auto-decompress. Cuts each fans page from
+    // ~109KB to ~21KB (~80% less residential-proxy bandwidth).
+    "--compressed",
     "--max-time",
     String(Math.ceil(FETCH_TIMEOUT_MS / 1000)),
     ...(proxy ? ["--proxy", proxy] : []),
@@ -139,6 +159,10 @@ async function fetchHtml(url) {
   let lastError;
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    // Rebuild the proxy URL each attempt so a blocked session is abandoned in
+    // favor of a fresh one on the next try.
+    const proxy = applyStickySession(baseProxy, sessionId);
+    const curlArgs = buildCurlArgs(proxy);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
@@ -150,21 +174,21 @@ async function fetchHtml(url) {
 
       // A 403 challenge page arrives as a successful curl run (HTTP 200-ish
       // body with "Just a moment..."). Treat it as retryable; if it persists,
-      // report the profile as inaccessible.
+      // the proxy egress IP is being throttled — not the profile being private.
       if (result.stdout.includes("Just a moment")) {
         lastError = new Error("Cloudflare challenge");
         if (attempt < MAX_ATTEMPTS - 1) {
+          // The current session's IP is flagged; rotate before retrying.
+          sessionId = generateSessionId();
           await sleep(600);
           continue;
         }
-        throw new LetterboxdForbiddenError("profile");
+        throw new CloudflareBlockedError(url);
       }
 
       return result.stdout;
     } catch (error) {
       clearTimeout(timer);
-
-      if (error instanceof LetterboxdForbiddenError) throw error;
 
       if (error?.name === "AbortError" || controller.signal.aborted) {
         lastError = new ProxyTimeoutError(url);
@@ -172,7 +196,11 @@ async function fetchHtml(url) {
         lastError = new ProxyError(url, error.message);
       }
 
-      if (attempt < MAX_ATTEMPTS - 1) await sleep(500);
+      if (attempt < MAX_ATTEMPTS - 1) {
+        // Timeout/connection drop may mean the current IP is bad; rotate.
+        sessionId = generateSessionId();
+        await sleep(500);
+      }
     } finally {
       clearTimeout(timer);
     }
@@ -189,7 +217,7 @@ async function fetchHtml(url) {
  * @returns {Promise<string[]>} Array of 4 film slugs, e.g. ["high-and-low", ...].
  * @throws {LetterboxdNotFoundError} Profile does not exist.
  * @throws {TooFewFavoritesError} Profile exists with fewer than 4 favorites.
- * @throws {ProxyTimeoutError|ProxyError|LetterboxdForbiddenError} Transport failure.
+ * @throws {ProxyTimeoutError|ProxyError|CloudflareBlockedError} Transport failure.
  */
 export async function getTopFourSlugs(username) {
   const url = `${BASE_URL}/${username}/`;
@@ -264,6 +292,20 @@ export function parseFansPage(html, slug, page) {
 }
 
 /**
+ * Build the URL of a film's fans page. Always uses the paginated form, even
+ * for page 1 — the bare `/film/{slug}/fans/` URL triggers a Cloudflare
+ * challenge nearly 100% of the time, while `/fans/page/1/` returns the same
+ * content with a 200.
+ *
+ * @param {string} slug Film slug.
+ * @param {number} page 1-indexed page number.
+ * @returns {string} Absolute URL.
+ */
+export function buildFansPageUrl(slug, page) {
+  return `${BASE_URL}/film/${slug}/fans/page/${page}/`;
+}
+
+/**
  * Fetch one fans page and return the usernames on it.
  *
  * @param {string} slug
@@ -271,11 +313,7 @@ export function parseFansPage(html, slug, page) {
  * @returns {Promise<{ usernames: string[], hasNext: boolean, count: number|null }>}
  */
 async function fetchFansPage(slug, page) {
-  const url =
-    page === 1
-      ? `${BASE_URL}/film/${slug}/fans/`
-      : `${BASE_URL}/film/${slug}/fans/page/${page}/`;
-  const html = await fetchHtml(url);
+  const html = await fetchHtml(buildFansPageUrl(slug, page));
   return parseFansPage(html, slug, page);
 }
 

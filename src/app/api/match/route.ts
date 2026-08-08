@@ -38,7 +38,7 @@ const PROFILE_CACHE_TTL_SECONDS = Number(
 
 const getCachedFansPage = unstable_cache(
   async (slug: string, page: number) =>
-    fetchFansPage(slug, page, { attempts: 3 }),
+    fetchFansPage(slug, page, { attempts: 6 }),
   ["fans-page"],
   { revalidate: FANS_CACHE_TTL_SECONDS }
 );

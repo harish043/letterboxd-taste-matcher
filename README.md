@@ -84,7 +84,7 @@ PROFILE_CACHE_TTL_SECONDS=3600   # Top 4 lookups cached for 1h
 
 Notes:
 - If you use proxying.io, you can add options by appending `_quality-high` (or `_country-xx`) to the password: `http://user:pass_quality-high@proxy.proxying.io:8080`.
-- For higher rate limits or more concurrent scans, a paid plan (or a proxy with sticky sessions) helps — some providers rotate IPs per request, which can occasionally re-trigger Cloudflare.
+- For higher rate limits or more concurrent scans, a paid plan helps. The scraper does **not** pin a sticky proxy session — it relies on the proxy's own per-request IP rotation so a Cloudflare-flagged IP is automatically abandoned on the next request.
 - The `SCRAPER_TOKEN`/`SCRAPER_URL` env vars are only needed for the (now optional) scraper VM setup below.
 
 ## Optional: scraper VM (not required)

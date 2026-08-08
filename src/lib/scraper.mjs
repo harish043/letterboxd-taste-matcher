@@ -17,20 +17,11 @@ const MAX_ATTEMPTS = 3;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Stable per-process id used to pin a sticky proxy session across requests.
-const STICKY_SESSION_ID = Date.now().toString(36);
-
-// proxying.io sticky sessions: append `_session-<id>` to the password so the
-// proxy keeps the same egress IP for the lifetime of this process. If the URL
-// already carries a session option, leave it untouched.
-function applyStickySession(proxyUrl) {
-  if (!proxyUrl) return proxyUrl;
-  if (/_session-[A-Za-z0-9]+/.test(proxyUrl)) return proxyUrl;
-  const match = proxyUrl.match(/^(https?:\/\/)([^:/@]+):([^@]*)@(.*)$/);
-  if (!match) return proxyUrl;
-  const [, scheme, user, pass, host] = match;
-  return `${scheme}${user}:${pass}_session-${STICKY_SESSION_ID}@${host}`;
-}
+// The residential proxy rotates egress IPs per request on its own (and per
+// plan, sometimes per session). We intentionally do NOT pin a sticky session:
+// a pinned IP that Cloudflare flags makes every retry fail against the same
+// dead IP. Letting the proxy rotate means a failed request naturally gets a
+// fresh IP on retry.
 
 // ---------------------------------------------------------------------------
 // Typed errors so the API route can map to the right HTTP status.
@@ -115,7 +106,7 @@ function resolveCurlBinary() {
  * @throws {ProxyTimeoutError|ProxyError|LetterboxdForbiddenError}
  */
 async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
-  const proxy = applyStickySession(process.env.SCRAPER_PROXY);
+  const proxy = process.env.SCRAPER_PROXY;
 
   const browserHeaders = [
     "-H",
@@ -169,11 +160,12 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
 
       // A 403 challenge page arrives as a successful curl run (HTTP 200-ish
       // body with "Just a moment..."). Treat it as retryable; if it persists,
-      // report the profile as inaccessible.
+      // report the profile as inaccessible. Back off longer on each attempt so
+      // the rotating proxy has time to land on a fresh, unchallenged IP.
       if (result.stdout.includes("Just a moment")) {
         lastError = new Error("Cloudflare challenge");
         if (attempt < attempts - 1) {
-          await sleep(600);
+          await sleep(800 + attempt * 800);
           continue;
         }
         throw new LetterboxdForbiddenError("profile");
@@ -191,7 +183,7 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
         lastError = new ProxyError(url, error.message);
       }
 
-      if (attempt < attempts - 1) await sleep(500);
+      if (attempt < attempts - 1) await sleep(500 + attempt * 500);
     } finally {
       clearTimeout(timer);
     }
@@ -212,7 +204,10 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
  */
 export async function getTopFourSlugs(username) {
   const url = `${BASE_URL}/${username}/`;
-  const html = await fetchHtml(url);
+  // The profile fetch is the single point of failure for the whole scan — if
+  // it dies, no matches can be computed. Give it extra retry budget so a
+  // transiently challenged proxy IP (rotating) is worked around.
+  const html = await fetchHtml(url, { attempts: 6 });
   const slugs = parseTopFourSlugs(html);
 
   if (slugs.length < 4) {
@@ -345,9 +340,10 @@ export async function getSharedFans(
     slugs.map(async (slug) => {
       try {
         // Page 1 is load-bearing: it carries the fan count that determines the
-        // spread schedule. Give it the full retry budget.
+        // spread schedule. Give it a generous retry budget so a transiently
+        // challenged proxy IP is worked around.
         const { usernames, hasNext, count } = await fetchPage(slug, 1, {
-          attempts: 3,
+          attempts: 6,
         });
         return { slug, usernames, hasNext, count };
       } catch {
@@ -397,7 +393,10 @@ export async function getSharedFans(
     while (cursor < tasks.length) {
       const { slug, page } = tasks[cursor++];
       try {
-        const { usernames } = await fetchPage(slug, page, { attempts: 1 });
+        // One retry: the worker pool tolerates a dropped page, but a single
+        // follow-up attempt recovers the common transient challenge without
+        // burning much budget.
+        const { usernames } = await fetchPage(slug, page, { attempts: 2 });
         for (const username of usernames) perFilm[slug].fans.add(username);
         if (usernames.length > 0) perFilm[slug].pagesFetched += 1;
         perFilm[slug].scannedPages = Math.max(perFilm[slug].scannedPages, page);

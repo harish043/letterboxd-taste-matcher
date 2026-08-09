@@ -10,7 +10,7 @@ import {
   query,
   where,
 } from "firebase/firestore";
-import { getFirestoreClient } from "@/lib/firebase-client";
+import { getFirestoreClient, ensureAnonymousAuth } from "@/lib/firebase-client";
 import ClaimProfile from "@/components/claim-profile";
 import { SocialLinksRow, type SocialLinks } from "@/components/social-icons";
 
@@ -545,11 +545,18 @@ function Results({
     for (let i = 0; i < usernames.length; i += 30) {
       chunks.push(usernames.slice(i, i + 30));
     }
-    Promise.all(
-      chunks.map((chunk) =>
-        getDocs(query(collection(db, "users"), where(documentId(), "in", chunk)))
+    // Reads require a Firebase session (anonymous auth) — wait for it before
+    // querying, or the rules deny the request.
+    ensureAnonymousAuth()
+      .then(() =>
+        Promise.all(
+          chunks.map((chunk) =>
+            getDocs(
+              query(collection(db, "users"), where(documentId(), "in", chunk))
+            )
+          )
+        )
       )
-    )
       .then((snapshots) => {
         if (cancelled) return;
         const next: Record<string, SocialLinks> = {};

@@ -9,7 +9,11 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
-import { getFirebaseAuth, getFirestoreClient } from "@/lib/firebase-client";
+import {
+  ensureAnonymousAuth,
+  getFirebaseAuth,
+  getFirestoreClient,
+} from "@/lib/firebase-client";
 import type { SocialLinks } from "@/components/social-icons";
 
 // Explicit user-driven flow states; the idle/viewing/claimed states are
@@ -69,10 +73,12 @@ export default function ClaimProfile({
     return unsubscribe;
   }, []);
 
-  // Load any existing claim for this username (public read).
+  // Load any existing claim for this username (public read — but reads now
+  // require a Firebase session, so ensure anonymous auth first).
   useEffect(() => {
     let cancelled = false;
-    getDoc(docId(username))
+    ensureAnonymousAuth()
+      .then(() => getDoc(docId(username)))
       .then((snap) => {
         if (cancelled) return;
         if (snap.exists()) {

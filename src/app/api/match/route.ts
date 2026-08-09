@@ -33,61 +33,6 @@ function logScan(payload: Record<string, string | number | boolean>) {
   void track("scan", payload).catch(() => {});
 }
 
-// --- Rate limiting ----------------------------------------------------------
-// In-memory sliding-window limiter keyed by client IP. Vercel serverless
-// instances are per-invocation, so this is best-effort (each instance keeps its
-// own counter and instances can run in parallel) — but it comfortably blunts a
-// feedback spike from Reddit without adding a distributed store. The heavy
-// operation here is the residential-proxy scrape, so throttling requests
-// protects the proxy budget.
-const RATE_LIMIT_MAX = 5; // requests per window per IP
-const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
-
-/** ip -> sorted request timestamps (ms) within the current window. */
-const rateLimitHits = new Map<string, number[]>();
-
-function clientIp(request: Request): string {
-  const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
-  return "unknown";
-}
-
-/**
- * Record a request for the given IP. Returns the Retry-After (seconds) if the
- * request is over the limit, otherwise null and records the request.
- */
-function checkRateLimit(ip: string): number | null {
-  const now = Date.now();
-  const windowStart = now - RATE_LIMIT_WINDOW_MS;
-
-  // Prune expired entries so the map never grows unboundedly on a long-lived
-  // instance. Amortized sweep, only once the map gets large.
-  if (rateLimitHits.size > 1000) {
-    for (const [key, hits] of rateLimitHits) {
-      if (hits[hits.length - 1] <= windowStart) rateLimitHits.delete(key);
-    }
-  }
-
-  const recent = (rateLimitHits.get(ip) ?? []).filter(
-    (t) => t > windowStart
-  );
-
-  if (recent.length >= RATE_LIMIT_MAX) {
-    const oldest = recent[0];
-    const retryAfter = Math.max(
-      1,
-      Math.ceil((oldest + RATE_LIMIT_WINDOW_MS - now) / 1000)
-    );
-    rateLimitHits.set(ip, recent);
-    return retryAfter;
-  }
-
-  recent.push(now);
-  rateLimitHits.set(ip, recent);
-  return null;
-}
-// ----------------------------------------------------------------------------
-
 // Search results and Top-4 lookups are cached because member-search queries
 // are stable (a film's fans change slowly). `unstable_cache` (not `use cache`)
 // because the latter's default in-memory handler does not persist across
@@ -121,18 +66,6 @@ const getCachedFansPage = unstable_cache(
 
 export async function POST(request: Request) {
   const startedAt = performance.now();
-  const ip = clientIp(request);
-  const retryAfter = checkRateLimit(ip);
-  if (retryAfter !== null) {
-    logScan({ outcome: "rate_limited", status: 429 });
-    return Response.json(
-      {
-        error:
-          "Too many requests from your network. Please wait a few minutes and try again.",
-      },
-      { status: 429, headers: { "Retry-After": String(retryAfter) } }
-    );
-  }
 
   let body: {
     username?: string;

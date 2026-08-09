@@ -58,6 +58,7 @@ export default function ClaimProfile({
   const [signedInAs, setSignedInAs] = useState<string | null>(null);
   const [form, setForm] = useState<Partial<SocialLinks>>({});
   const [saving, setSaving] = useState(false);
+  const [savedNote, setSavedNote] = useState<string | null>(null);
 
   const isOwner = signedInAs === username;
 
@@ -220,6 +221,8 @@ export default function ClaimProfile({
       setExisting(values);
       setForm({});
       onClaimed(username, values);
+      setSavedNote("Saved \u2713 \u2014 links now show on your match cards");
+      setTimeout(() => setSavedNote(null), 4000);
     } catch (err) {
       console.error("[claim] save failed:", err);
       setError(
@@ -239,8 +242,15 @@ export default function ClaimProfile({
       setExisting(null);
       setForm({});
       onClaimed(username, null);
-    } catch {
-      setError("Couldn't remove your socials. Please try again.");
+      setSavedNote("Removed");
+      setTimeout(() => setSavedNote(null), 3000);
+    } catch (err) {
+      console.error("[claim] remove failed:", err);
+      setError(
+        err instanceof Error && err.message
+          ? `Couldn't remove your socials — ${err.message}`
+          : "Couldn't remove your socials. Please try again."
+      );
     } finally {
       setSaving(false);
     }
@@ -377,7 +387,7 @@ export default function ClaimProfile({
           className={inputClass}
         />
       </div>
-      <div className="mt-4 flex items-center gap-3">
+      <div className="mt-4 flex flex-wrap items-center gap-3">
         <button
           type="button"
           disabled={saving}
@@ -394,6 +404,9 @@ export default function ClaimProfile({
         >
           Remove
         </button>
+        {savedNote && (
+          <span className="font-mono text-xs text-amber">{savedNote}</span>
+        )}
       </div>
       {error && <p className="mt-3 font-mono text-xs text-amber">{error}</p>}
     </div>

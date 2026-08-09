@@ -12,6 +12,7 @@ import {
   ProxyError,
 } from "@/lib/scraper.mjs";
 import { unstable_cache } from "next/cache";
+import { track } from "@vercel/analytics/server";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -20,9 +21,17 @@ const USERNAME_REGEX = /^[a-zA-Z0-9_]{1,30}$/;
 const MAX_PAGES_PER_FILM = 20;
 const DEFAULT_PAGES_PER_FILM = 10;
 const DEFAULT_CONCURRENCY = 8;
+// Cap the matches returned so a very popular profile can't produce a
+// multi-megabyte payload; the client shows the true total separately.
+const MAX_MATCHES = 100;
 // Primary pipeline uses Letterboxd's member-search engine (fast, cheap, more
 // complete). Set SCRAPE_MODE=pages to fall back to fan-page scraping.
 const SCRAPE_MODE = process.env.SCRAPE_MODE === "pages" ? "pages" : "search";
+
+// Fire-and-forget custom analytics. No-ops (logs a warning) outside Vercel.
+function logScan(payload: Record<string, string | number | boolean>) {
+  void track("scan", payload).catch(() => {});
+}
 
 // --- Rate limiting ----------------------------------------------------------
 // In-memory sliding-window limiter keyed by client IP. Vercel serverless
@@ -111,9 +120,11 @@ const getCachedFansPage = unstable_cache(
 );
 
 export async function POST(request: Request) {
+  const startedAt = performance.now();
   const ip = clientIp(request);
   const retryAfter = checkRateLimit(ip);
   if (retryAfter !== null) {
+    logScan({ outcome: "rate_limited", status: 429 });
     return Response.json(
       {
         error:
@@ -169,7 +180,7 @@ export async function POST(request: Request) {
   const minMatches =
     typeof body.minMatches === "number" && body.minMatches >= 1
       ? Math.min(Math.floor(body.minMatches), 4)
-      : 1;
+      : 2;
 
   // Optional: delegate scraping to a self-hosted scraper service (SCRAPER_URL).
   // When unset, this function scrapes directly through the residential proxy
@@ -227,23 +238,41 @@ export async function POST(request: Request) {
       // finds users sharing the Top 4 films. Exact shared films are derived
       // from which combination queries each match appears in — no per-match
       // profile fetches.
+      // Lazy tiers: minTier=2 skips the 4 single-film queries (the 1-match
+      // tier is only fetched when the client actually asks for it).
       const { matches } = await searchMatches(topFour, {
         excludeUsername: username,
         search: getCachedSearch,
+        minTier: minMatches,
       });
 
-      // Honor minMatches (default 1 = return every tier; the client filters
-      // client-side for its tier switcher).
+      // Honor minMatches (safety net; combos already start at minTier) and cap
+      // the response so very popular profiles can't bloat the payload.
       const filtered = matches.filter(
         (match) => match.sharedFilms.length >= minMatches
       );
+      const totalMatches = filtered.length;
+      const capped = filtered.slice(0, MAX_MATCHES);
+      const truncated = totalMatches > MAX_MATCHES;
+
+      logScan({
+        outcome: "success",
+        username,
+        mode: SCRAPE_MODE,
+        matchCount: totalMatches,
+        minMatches,
+        truncated,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
 
       return Response.json({
         username,
         topFour,
         stats,
-        matchCount: filtered.length,
-        matches: filtered,
+        matchCount: totalMatches,
+        totalMatches,
+        truncated,
+        matches: capped,
         scanned: null,
       });
     }
@@ -258,17 +287,40 @@ export async function POST(request: Request) {
     });
 
     const { matches, scanned } = buildMatchResult(topFourSlugs, perFilm, minMatches);
+    const totalMatches = matches.length;
+    const capped = matches.slice(0, MAX_MATCHES);
+    const truncated = totalMatches > MAX_MATCHES;
+
+    logScan({
+      outcome: "success",
+      username,
+      mode: SCRAPE_MODE,
+      matchCount: totalMatches,
+      minMatches,
+      truncated,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
 
     return Response.json({
       username,
       topFour,
       stats,
-      matchCount: matches.length,
-      matches,
+      matchCount: totalMatches,
+      totalMatches,
+      truncated,
+      matches: capped,
       scanned,
     });
   } catch (error) {
+    const base = {
+      outcome: "error",
+      username,
+      mode: SCRAPE_MODE,
+      durationMs: Math.round(performance.now() - startedAt),
+    };
+
     if (error instanceof LetterboxdNotFoundError) {
+      logScan({ ...base, kind: "not_found", status: 404 });
       return Response.json(
         {
           error: `We couldn't find the Letterboxd profile "${username}". Double-check the username and try again.`,
@@ -278,6 +330,7 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof TooFewFavoritesError) {
+      logScan({ ...base, kind: "too_few_favorites", status: 400 });
       return Response.json(
         {
           error: `The profile "${username}" needs at least 4 favorite films on Letterboxd to find matches (it currently has fewer). Add favorites and try again.`,
@@ -289,6 +342,7 @@ export async function POST(request: Request) {
     if (error instanceof CloudflareBlockedError) {
       // Upstream protection (Cloudflare) throttled our proxy egress after all
       // retries. This is rate-limiting, not the profile being private.
+      logScan({ ...base, kind: "cloudflare_blocked", status: 429 });
       return Response.json(
         {
           error:
@@ -299,6 +353,7 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof ProxyTimeoutError) {
+      logScan({ ...base, kind: "timeout", status: 504 });
       return Response.json(
         { error: "The match request timed out. Please try again." },
         { status: 504 }
@@ -306,6 +361,7 @@ export async function POST(request: Request) {
     }
 
     if (error instanceof ProxyError) {
+      logScan({ ...base, kind: "proxy_error", status: 502 });
       return Response.json(
         { error: "The proxy could not complete the request. Please try again." },
         { status: 502 }
@@ -314,6 +370,7 @@ export async function POST(request: Request) {
 
     const message =
       error instanceof Error ? error.message : "Unknown scraping error.";
+    logScan({ ...base, kind: "unknown", status: 502 });
     return Response.json({ error: message }, { status: 502 });
   }
 }

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { track } from "@vercel/analytics";
 
 type Match = {
   username: string;
@@ -29,6 +30,8 @@ type MatchResult = {
   topFour: Film[];
   stats?: { films: number | null; thisYear: number | null };
   matchCount: number;
+  totalMatches: number;
+  truncated: boolean;
   matches: Match[];
   scanned: Record<string, ScannedFilm> | null;
 };
@@ -36,6 +39,11 @@ type MatchResult = {
 type Status = "idle" | "loading" | "success" | "error";
 
 const DEFAULT_OPTIONS = { maxPagesPerFilm: 10, delayMs: 0 };
+// Initial scans skip the 1-match tier (server runs 11 queries instead of 15);
+// the "All (1+)" filter lazily refetches with minMatches=1 when needed.
+const DEFAULT_MIN_MATCHES = 2;
+
+class ScanError extends Error {}
 
 const FILTER_OPTIONS = [
   { value: 2, label: "2+ Matches" },
@@ -78,6 +86,10 @@ export default function MatchFinder() {
   const [error, setError] = useState<string | null>(null);
   const [loadingStep, setLoadingStep] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
+  // Lazy 1-match tier: refetches the result with minMatches=1 (server runs the
+  // 4 single-film queries) without touching history/URL/status state.
+  const [refreshingTier, setRefreshingTier] = useState(false);
+  const [tierError, setTierError] = useState<string | null>(null);
 
   // Cycle through the loading steps every 4s while a scan is running.
   useEffect(() => {
@@ -116,7 +128,26 @@ export default function MatchFinder() {
         setStatus("success");
       }
     });
+    // Mount-only: must not re-run when runScan's identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function fetchMatches(name: string, minMatches: number) {
+    const res = await fetch("/api/match", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: name,
+        ...DEFAULT_OPTIONS,
+        minMatches,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      throw new ScanError(data?.error ?? "Something went wrong on our side.");
+    }
+    return data as MatchResult;
+  }
 
   async function runScan(name: string) {
     if (!name) return;
@@ -126,20 +157,8 @@ export default function MatchFinder() {
     setResult(null);
 
     try {
-      const res = await fetch("/api/match", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: name, ...DEFAULT_OPTIONS }),
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setError(data?.error ?? "Something went wrong on our side.");
-        setStatus("error");
-        return;
-      }
-
-      setResult(data as MatchResult);
+      const data = await fetchMatches(name, DEFAULT_MIN_MATCHES);
+      setResult(data);
       setStatus("success");
 
       // Deep-link the successful result.
@@ -157,10 +176,30 @@ export default function MatchFinder() {
       });
 
       // Cache the last result so a plain revisit restores it instantly.
-      writeStorage(LAST_KEY, { username: name, result: data as MatchResult });
-    } catch {
-      setError("Could not reach the server. Try again in a moment.");
+      writeStorage(LAST_KEY, { username: name, result: data });
+    } catch (error) {
+      if (error instanceof ScanError) {
+        setError(error.message);
+      } else {
+        setError("Could not reach the server. Try again in a moment.");
+      }
       setStatus("error");
+    }
+  }
+
+  // Lazy 1-match tier: refetches the result with minMatches=1 (server runs the
+  // 4 single-film queries) without touching history/URL/status state.
+  async function handleRefetchTier(name: string) {
+    if (refreshingTier) return;
+    setRefreshingTier(true);
+    setTierError(null);
+    try {
+      const data = await fetchMatches(name, 1);
+      setResult(data);
+    } catch {
+      setTierError("Couldn't load the 1+ match tier. Try again in a moment.");
+    } finally {
+      setRefreshingTier(false);
     }
   }
 
@@ -238,7 +277,12 @@ export default function MatchFinder() {
       )}
 
       {status === "success" && result && (
-        <Results result={result} />
+        <Results
+          result={result}
+          onRefetchTier={handleRefetchTier}
+          refreshingTier={refreshingTier}
+          tierError={tierError}
+        />
       )}
     </div>
   );
@@ -374,7 +418,17 @@ function OpenAllLink({ films }: { films: Film[] }) {
   );
 }
 
-function Results({ result }: { result: MatchResult }) {
+function Results({
+  result,
+  onRefetchTier,
+  refreshingTier,
+  tierError,
+}: {
+  result: MatchResult;
+  onRefetchTier: (username: string) => void;
+  refreshingTier: boolean;
+  tierError: string | null;
+}) {
   const [minMatchFilter, setMinMatchFilter] = useState(2);
   const [selectedFilmFilter, setSelectedFilmFilter] = useState<string | null>(
     null
@@ -384,6 +438,14 @@ function Results({ result }: { result: MatchResult }) {
   // cached response should never crash the results view.
   const matches = Array.isArray(result.matches) ? result.matches : [];
   const topFour = Array.isArray(result.topFour) ? result.topFour : [];
+  const totalMatches =
+    typeof result.totalMatches === "number"
+      ? result.totalMatches
+      : matches.length;
+  const truncated = result.truncated === true;
+  // Whether the current payload already includes 1-film matches (legacy cached
+  // results fetched with minMatches=1 do; new lazy scans don't).
+  const hasOneTier = matches.some((match) => match.sharedFilms.length === 1);
   // Cumulative: "2+ Matches" includes everyone sharing 2, 3, or 4 films.
   // When a film is selected, only matches that share that film remain.
   const filteredMatches = matches.filter(
@@ -397,6 +459,7 @@ function Results({ result }: { result: MatchResult }) {
 
   async function copyUsernames() {
     const text = matches.map((m) => m.username).join("\n");
+    track("copy_usernames");
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -404,6 +467,21 @@ function Results({ result }: { result: MatchResult }) {
     } catch {
       // clipboard unavailable; do nothing
     }
+  }
+
+  function handleTierSelect(value: number) {
+    setMinMatchFilter(value);
+    track("tier_filter", { tier: value });
+    // "All (1+)" needs the single-film queries; fetch them lazily if the
+    // current result doesn't include the 1-match tier yet.
+    if (value === 1 && !hasOneTier) {
+      onRefetchTier(result.username);
+    }
+  }
+
+  function handleFilmSelect(slug: string | null) {
+    setSelectedFilmFilter(slug);
+    if (slug) track("film_filter", { slug });
   }
 
   return (
@@ -433,10 +511,16 @@ function Results({ result }: { result: MatchResult }) {
           </p>
         )}
 
+      {truncated && (
+        <p className="mt-3 font-mono text-xs text-amber">
+          Showing top {matches.length} of {totalMatches} profiles
+        </p>
+      )}
+
       <FilmFilterStrip
         films={topFour}
         selected={selectedFilmFilter}
-        onSelect={setSelectedFilmFilter}
+        onSelect={handleFilmSelect}
       />
 
       <MatchDistributionBar matches={matches} />
@@ -453,22 +537,33 @@ function Results({ result }: { result: MatchResult }) {
             role="group"
             aria-label="Filter matches by number of shared films"
           >
-            {FILTER_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setMinMatchFilter(option.value)}
-                aria-pressed={minMatchFilter === option.value}
-                className={`h-10 rounded-full border px-4 font-mono text-xs tracking-wide transition-colors ${
-                  minMatchFilter === option.value
-                    ? "border-amber bg-amber text-ink"
-                    : "border-steel bg-surface text-slate hover:border-amber/60 hover:text-bone"
-                }`}
-              >
-                {option.label}
-              </button>
-            ))}
+            {FILTER_OPTIONS.map((option) => {
+              const isLoadingTier =
+                option.value === 1 && refreshingTier && minMatchFilter === 1;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => handleTierSelect(option.value)}
+                  aria-pressed={minMatchFilter === option.value}
+                  disabled={isLoadingTier}
+                  className={`h-10 rounded-full border px-4 font-mono text-xs tracking-wide transition-colors ${
+                    minMatchFilter === option.value
+                      ? "border-amber bg-amber text-ink"
+                      : "border-steel bg-surface text-slate hover:border-amber/60 hover:text-bone"
+                  } disabled:cursor-wait disabled:opacity-70`}
+                >
+                  {isLoadingTier
+                    ? "Loading\u2026"
+                    : option.label}
+                </button>
+              );
+            })}
           </div>
+
+          {tierError && (
+            <p className="mt-3 font-mono text-xs text-amber">{tierError}</p>
+          )}
 
           <div className="mt-4 flex flex-wrap items-center gap-4">
             <p className="font-mono text-xs text-slate">

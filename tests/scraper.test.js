@@ -14,6 +14,7 @@ import {
   parseSearchResults,
   parseProfileStats,
   generateSessionId,
+  searchMatches,
 } from "../src/lib/scraper.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -175,4 +176,51 @@ test("parseProfileStats returns nulls when no stats block", () => {
     films: null,
     thisYear: null,
   });
+});
+
+const TOP_FOUR = ["a", "b", "c", "d"].map((slug) => ({
+  slug,
+  title: slug.toUpperCase(),
+  year: null,
+  posterUrl: null,
+}));
+
+test("searchMatches minTier=2 skips single-film queries and the 1-match tier", async () => {
+  const called = [];
+  const search = async (url) => {
+    called.push(url);
+    if (url.includes("(fan:a+fan:b)")) {
+      return [{ username: "uab", displayName: "U A", avatar: null, badge: null }];
+    }
+    return [];
+  };
+
+  const { matches } = await searchMatches(TOP_FOUR, { search, minTier: 2 });
+
+  // 6 pairs + 4 triples + 1 quad = 11 queries, none of them single-film.
+  assert.equal(called.length, 11);
+  assert.ok(called.every((url) => !/\(fan:[a-d]\)/.test(url)));
+  assert.deepEqual(matches, [
+    {
+      username: "uab",
+      displayName: "U A",
+      avatar: null,
+      badge: null,
+      sharedFilms: ["a", "b"],
+      percentage: 50,
+    },
+  ]);
+});
+
+test("searchMatches default minTier includes all 15 queries", async () => {
+  const called = [];
+  const { matches } = await searchMatches(TOP_FOUR, {
+    search: async (url) => {
+      called.push(url);
+      return [];
+    },
+  });
+
+  assert.equal(called.length, 15);
+  assert.deepEqual(matches, []);
 });

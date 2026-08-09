@@ -540,27 +540,31 @@ export async function getSharedFans(
 /**
  * Find users who share the given Top 4 films using only Letterboxd's
  * member-search engine — no per-match profile fetches. Runs one discrete query
- * per film combination (6 pairs + 4 triples + 1 quad). A member returned by a
- * combination is a fan of every film in it, so unioning the combo films across
- * queries yields each match's exact shared-film set. Excludes the searcher.
+ * per film combination (6 pairs + 4 triples + 1 quad, plus 4 singles when
+ * minTier=1). A member returned by a combination is a fan of every film in it,
+ * so unioning the combo films across queries yields each match's exact
+ * shared-film set. Excludes the searcher.
  *
  * @param {Array<{ slug: string, title: string, year: string|null, posterUrl: string|null }>} topFour The user's Top 4 films.
  * @param {object} [options]
  * @param {string} [options.excludeUsername] Searcher's username (excluded from results).
  * @param {(query: string) => Promise<Array<{ username: string, displayName: string, avatar: string|null }>>} [options.search]
  *   Injectable search fetcher (defaults to searchMembers).
+ * @param {number} [options.minTier=1] Smallest film-combination size to query.
+ *   1 includes single-film queries (the 1-match tier); 2 skips them, which
+ *   drops the 1-match tier but saves 4 of 15 queries.
  * @returns {Promise<{ matches: Array<{ username: string, displayName: string, avatar: string|null, sharedFilms: string[], percentage: number }> }>}
  */
 export async function searchMatches(
   topFour,
-  { excludeUsername = null, search = searchMembers } = {}
+  { excludeUsername = null, search = searchMembers, minTier = 1 } = {}
 ) {
   const slugs = topFour.map((film) => film.slug);
 
-  // Every combination of the films, sizes 1..4. Each is a discrete AND query;
-  // a member in the result is a fan of every film in that combination. Depth 1
-  // (single films) is included so users sharing exactly one film are found too
-  // — otherwise the 1-film tier would always be empty.
+  // Every combination of the films, sizes minTier..4. Each is a discrete AND
+  // query; a member in the result is a fan of every film in that combination.
+  // Depth 1 (single films) is included so users sharing exactly one film are
+  // found too — otherwise the 1-film tier would always be empty.
   const combos = [];
   const pick = (start, depth, chosen) => {
     if (chosen.length === depth) {
@@ -571,7 +575,8 @@ export async function searchMatches(
       pick(i + 1, depth, [...chosen, slugs[i]]);
     }
   };
-  for (let depth = 1; depth <= Math.min(4, slugs.length); depth++) {
+  const startDepth = Math.min(Math.max(minTier, 1), 4);
+  for (let depth = startDepth; depth <= Math.min(4, slugs.length); depth++) {
     pick(0, depth, []);
   }
 

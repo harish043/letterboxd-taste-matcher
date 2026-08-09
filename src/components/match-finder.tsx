@@ -10,7 +10,8 @@ import {
   query,
   where,
 } from "firebase/firestore";
-import { getFirestoreClient, ensureAnonymousAuth } from "@/lib/firebase-client";
+import { getFirestoreClient, ensureAnonymousAuth, getFirebaseAuth } from "@/lib/firebase-client";
+import { onAuthStateChanged } from "firebase/auth";
 import ClaimProfile from "@/components/claim-profile";
 import { SocialLinksRow, type SocialLinks } from "@/components/social-icons";
 
@@ -100,6 +101,17 @@ export default function MatchFinder() {
   // 4 single-film queries) without touching history/URL/status state.
   const [refreshingTier, setRefreshingTier] = useState(false);
   const [tierError, setTierError] = useState<string | null>(null);
+  // The current viewer's Firebase uid (anonymous or a verified claimer). The
+  // scanned user's own links only render when the viewer is that owner.
+  const [viewerUid, setViewerUid] = useState<string | null>(null);
+
+  // Track the auth session so Results can gate the scanned user's own links.
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(getFirebaseAuth(), (user) => {
+      setViewerUid(user?.uid ?? null);
+    });
+    return unsubscribe;
+  }, []);
 
   // Cycle through the loading steps every 4s while a scan is running.
   useEffect(() => {
@@ -317,6 +329,7 @@ export default function MatchFinder() {
       {status === "success" && result && (
         <Results
           result={result}
+          viewerUid={viewerUid}
           onRefetchTier={handleRefetchTier}
           refreshingTier={refreshingTier}
           tierError={tierError}
@@ -458,11 +471,13 @@ function OpenAllLink({ films }: { films: Film[] }) {
 
 function Results({
   result,
+  viewerUid,
   onRefetchTier,
   refreshingTier,
   tierError,
 }: {
   result: MatchResult;
+  viewerUid: string | null;
   onRefetchTier: (username: string) => void;
   refreshingTier: boolean;
   tierError: string | null;
@@ -613,7 +628,10 @@ function Results({
         const statsHasData =
           result.stats &&
           (result.stats.films != null || result.stats.thisYear != null);
-        const mySocials = socials[result.username];
+        // The scanned user's own links only render for the verified owner —
+        // everyone else sees them on match cards, not on the profile line.
+        const mySocials =
+          viewerUid === result.username ? socials[result.username] : undefined;
         if (!statsHasData && !mySocials) return null;
         return (
           <p className="mt-3 font-mono text-xs text-slate">

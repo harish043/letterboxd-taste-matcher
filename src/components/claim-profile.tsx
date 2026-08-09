@@ -300,7 +300,7 @@ export default function ClaimProfile({
           onClick={startClaim}
           className="rounded-full border border-steel bg-surface px-3 py-1 font-mono text-xs text-slate transition-colors hover:border-amber/60 hover:text-amber"
         >
-          Verify to manage
+          Verify to view
         </button>
       </div>
     );

@@ -152,13 +152,19 @@ export default function ClaimProfile({
       }
 
       if (!res.ok) {
-        const raw = (data as { error?: unknown } | null)?.error;
+        const body = (data as { error?: unknown; code?: unknown } | null) ?? {};
+        const raw = body.error;
+        const code = body.code;
+        if (typeof raw === "string") {
+          throw new Error(raw);
+        }
+        // Unparseable body (killed function) or an unknown error shape:
+        // surface the HTTP status + server error code so failures are
+        // diagnosable.
         throw new Error(
-          typeof raw === "string"
-            ? raw
-            : typeof (raw as { message?: unknown } | null)?.message === "string"
-              ? (raw as { message: string }).message
-              : "Verification failed. The server returned an error. Please try again."
+          typeof code === "string"
+            ? `Verification failed (HTTP ${res.status}, code: ${code}). Please try again in a moment.`
+            : `Verification failed (HTTP ${res.status}). Please try again in a moment.`
         );
       }
 
@@ -172,6 +178,7 @@ export default function ClaimProfile({
       await signInWithCustomToken(getFirebaseAuth(), customToken);
       setFlow("claimed");
     } catch (err) {
+      console.error("[claim] verification failed:", err);
       setError(
         err instanceof Error ? err.message : "Verification failed. Please try again."
       );
@@ -266,7 +273,9 @@ export default function ClaimProfile({
         </div>
         <ol className="mt-3 space-y-1 font-mono text-xs leading-6 text-slate">
           <li>1. Open your Letterboxd profile and hit Edit.</li>
-          <li>2. Paste this code into your bio and save.</li>
+          <li>
+            2. Paste this code at the start of your bio and save.
+          </li>
           <li>3. Click &ldquo;Verify bio&rdquo; below.</li>
         </ol>
         <div className="mt-4 flex items-center gap-3">

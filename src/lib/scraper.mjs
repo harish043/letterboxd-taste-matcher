@@ -492,11 +492,17 @@ function extractFullBioText(payload) {
  * the snippet.
  *
  * @param {string} username Letterboxd username.
+ * @param {object} [options]
+ * @param {number} [options.attempts=MAX_ATTEMPTS] Max fetch attempts. Lower it
+ *   (e.g. 2) for latency-sensitive flows like the bio challenge.
  * @returns {Promise<{ bio: string, fullTextUrl: string|null }>}
  * @throws {LetterboxdNotFoundError|ProxyTimeoutError|ProxyError|CloudflareBlockedError}
  */
-export async function getProfileBio(username) {
-  const html = await fetchHtml(`${BASE_URL}/${username}/`);
+export async function getProfileBio(
+  username,
+  { attempts = MAX_ATTEMPTS } = {}
+) {
+  const html = await fetchHtml(`${BASE_URL}/${username}/`, { attempts });
   if (
     html.includes("Letterboxd - Not Found") ||
     !html.includes("profile-header")

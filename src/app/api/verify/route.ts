@@ -35,6 +35,12 @@ function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/** Error response with a machine-readable code + a server log line. */
+function fail(message: string, status: number, code: string) {
+  console.error(`[verify] ${code} (${status}): ${message}`);
+  return Response.json({ error: message, code }, { status });
+}
+
 /**
  * Ownership challenge: the user places a 6-character token in their Letterboxd
  * bio, then we verify it's there (fresh scrape — never cached, the bio is the
@@ -43,13 +49,31 @@ function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
  * can tie writes to the verified owner.
  */
 export async function POST(request: Request) {
+  try {
+    return await handleVerify(request);
+  } catch (error) {
+    // Never let an unforeseen crash escape as an empty/HTML body — always
+    // answer with JSON so the client can show a readable message.
+    console.error("[verify] unhandled:", error);
+    return Response.json(
+      {
+        error: "Unexpected verification error. Please try again.",
+        code: "unhandled",
+      },
+      { status: 500 }
+    );
+  }
+}
+
+async function handleVerify(request: Request) {
   let body: { username?: string; token?: string };
   try {
     body = await request.json();
   } catch {
-    return Response.json(
-      { error: "Invalid JSON body. Expected { \"username\": string, \"token\": string }." },
-      { status: 400 }
+    return fail(
+      "Invalid JSON body. Expected { \"username\": string, \"token\": string }.",
+      400,
+      "bad_request"
     );
   }
 
@@ -57,25 +81,27 @@ export async function POST(request: Request) {
   const token = typeof body.token === "string" ? body.token.trim() : "";
 
   if (!username || !USERNAME_REGEX.test(username)) {
-    return Response.json(
-      {
-        error:
-          "Invalid username. Only letters, numbers, and underscores (1–30 characters) are allowed.",
-      },
-      { status: 400 }
+    return fail(
+      "Invalid username. Only letters, numbers, and underscores (1–30 characters) are allowed.",
+      400,
+      "bad_username"
     );
   }
 
   if (!token || !TOKEN_REGEX.test(token)) {
-    return Response.json(
-      { error: "Invalid token. Use the 6-character code shown on screen." },
-      { status: 400 }
+    return fail(
+      "Invalid token. Use the 6-character code shown on screen.",
+      400,
+      "bad_token"
     );
   }
 
   try {
+    // One light scrape: the profile page, parsed for its bio text. The token
+    // is checked as a plain substring of the bio HTML — no extra requests
+    // beyond the (best-effort) full-text fetch for truncated bios.
     const { bio, fullTextUrl } = await withDeadline(
-      getProfileBio(username),
+      getProfileBio(username, { attempts: 2 }),
       SCRAPE_DEADLINE_MS
     );
     // Long bios are truncated on the profile page; check the full text too
@@ -95,12 +121,10 @@ export async function POST(request: Request) {
     }
 
     if (!hasToken) {
-      return Response.json(
-        {
-          error:
-            "Token not found in your Letterboxd bio yet. Save your bio on Letterboxd, then try again.",
-        },
-        { status: 401 }
+      return fail(
+        "Token not found in your Letterboxd bio yet. Save your bio on Letterboxd, then try again.",
+        401,
+        "token_not_in_bio"
       );
     }
 
@@ -109,47 +133,43 @@ export async function POST(request: Request) {
     return Response.json({ token: customToken });
   } catch (error) {
     if (error instanceof VerifyTimeoutError) {
-      return Response.json(
-        { error: error.message },
-        { status: 504 }
-      );
+      return fail(error.message, 504, "timeout");
     }
 
     if (error instanceof LetterboxdNotFoundError) {
-      return Response.json(
-        {
-          error: `We couldn't find the Letterboxd profile "${username}". Double-check the username and try again.`,
-        },
-        { status: 401 }
+      return fail(
+        `We couldn't find the Letterboxd profile "${username}". Double-check the username and try again.`,
+        401,
+        "not_found"
       );
     }
 
     if (error instanceof CloudflareBlockedError) {
-      return Response.json(
-        {
-          error:
-            "The scraper was temporarily rate-limited by upstream protection. Please try again in a few moments.",
-        },
-        { status: 429 }
+      return fail(
+        "The scraper was temporarily rate-limited by upstream protection. Please try again in a few moments.",
+        429,
+        "cloudflare_blocked"
       );
     }
 
     if (error instanceof ProxyTimeoutError) {
-      return Response.json(
-        { error: "The verification request timed out. Please try again." },
-        { status: 504 }
+      return fail(
+        "The verification request timed out. Please try again.",
+        504,
+        "proxy_timeout"
       );
     }
 
     if (error instanceof ProxyError) {
-      return Response.json(
-        { error: "The proxy could not complete the request. Please try again." },
-        { status: 502 }
+      return fail(
+        "The proxy could not complete the request. Please try again.",
+        502,
+        "proxy_error"
       );
     }
 
     const message =
       error instanceof Error ? error.message : "Unknown verification error.";
-    return Response.json({ error: message }, { status: 502 });
+    return fail(message, 502, "verify_error");
   }
 }

@@ -10,12 +10,7 @@ import {
 } from "firebase/firestore";
 import { onAuthStateChanged, signInWithCustomToken } from "firebase/auth";
 import { getFirebaseAuth, getFirestoreClient } from "@/lib/firebase-client";
-
-export type SocialLinks = {
-  instagram?: string;
-  x?: string;
-  discord?: string;
-};
+import type { SocialLinks } from "@/components/social-icons";
 
 // Explicit user-driven flow states; the idle/viewing/claimed states are
 // derived from auth + the existing Firestore doc during render (no effects).
@@ -59,6 +54,9 @@ export default function ClaimProfile({
   const [form, setForm] = useState<Partial<SocialLinks>>({});
   const [saving, setSaving] = useState(false);
   const [savedNote, setSavedNote] = useState<string | null>(null);
+  // Claimed but collapsed: the links live in the results stats line, so the
+  // form only exists while the owner is actually editing.
+  const [editing, setEditing] = useState(false);
 
   const isOwner = signedInAs === username;
 
@@ -179,6 +177,9 @@ export default function ClaimProfile({
 
       await signInWithCustomToken(getFirebaseAuth(), customToken);
       setFlow("claimed");
+      // Straight into the form: fresh claims need handles, managing needs
+      // access to the existing ones.
+      setEditing(true);
     } catch (err) {
       console.error("[claim] verification failed:", err);
       setError(
@@ -221,7 +222,10 @@ export default function ClaimProfile({
       setExisting(values);
       setForm({});
       onClaimed(username, values);
-      setSavedNote("Saved \u2713 \u2014 links now show on your match cards");
+      // Collapse back to the one-line display; the links now sit in the
+      // stats line next to the icon row.
+      setEditing(false);
+      setSavedNote("Saved \u2713");
       setTimeout(() => setSavedNote(null), 4000);
     } catch (err) {
       console.error("[claim] save failed:", err);
@@ -242,6 +246,8 @@ export default function ClaimProfile({
       setExisting(null);
       setForm({});
       onClaimed(username, null);
+      setEditing(false);
+      setFlow("none");
       setSavedNote("Removed");
       setTimeout(() => setSavedNote(null), 3000);
     } catch (err) {
@@ -261,20 +267,25 @@ export default function ClaimProfile({
 
   if (step === "idle") {
     return (
-      <button
-        type="button"
-        onClick={startClaim}
-        className="rounded-full border border-steel bg-surface px-3 py-1 font-mono text-xs text-slate transition-colors hover:border-amber/60 hover:text-amber"
-      >
-        + Claim socials
-      </button>
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={startClaim}
+          className="rounded-full border border-steel bg-surface px-3 py-1 font-mono text-xs text-slate transition-colors hover:border-amber/60 hover:text-amber"
+        >
+          + Claim socials
+        </button>
+        {savedNote && (
+          <span className="font-mono text-xs text-amber">{savedNote}</span>
+        )}
+      </div>
     );
   }
 
   if (step === "viewing") {
     const any = existing?.instagram || existing?.x || existing?.discord;
     return (
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <span className="rounded-full border border-amber/30 bg-amber-soft px-3 py-1 font-mono text-xs text-amber">
           socials {any ? "linked" : "claimed"}
         </span>
@@ -344,7 +355,26 @@ export default function ClaimProfile({
     );
   }
 
-  // step === "claimed" — signed in as the owner; manage socials.
+  // step === "claimed" — signed in as the owner. Collapsed by default: the
+  // links themselves render in the results stats line; the form appears only
+  // while editing.
+  if (!editing) {
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="rounded-full border border-steel bg-surface px-3 py-1 font-mono text-xs text-slate transition-colors hover:border-amber/60 hover:text-amber"
+        >
+          Manage socials
+        </button>
+        {savedNote && (
+          <span className="font-mono text-xs text-amber">{savedNote}</span>
+        )}
+      </div>
+    );
+  }
+
   const inputClass =
     "h-9 w-full rounded-lg border border-steel bg-raise px-3 font-mono text-xs text-bone placeholder:text-slate outline-none transition-colors focus:border-amber";
   return (
@@ -404,9 +434,14 @@ export default function ClaimProfile({
         >
           Remove
         </button>
-        {savedNote && (
-          <span className="font-mono text-xs text-amber">{savedNote}</span>
-        )}
+        <button
+          type="button"
+          disabled={saving}
+          onClick={() => setEditing(false)}
+          className="rounded-full px-3 py-1.5 font-mono text-xs text-slate transition-colors hover:text-amber"
+        >
+          Done
+        </button>
       </div>
       {error && <p className="mt-3 font-mono text-xs text-amber">{error}</p>}
     </div>

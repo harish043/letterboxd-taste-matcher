@@ -418,12 +418,12 @@ export default function ClaimProfile({
         </p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <a
-            href="https://letterboxd.com/edit/"
+            href="https://letterboxd.com/settings/"
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex h-9 items-center rounded-full bg-amber px-5 font-mono text-xs font-medium tracking-wide text-ink transition-all hover:bg-bone"
           >
-            Open Letterboxd edit page
+            Open Letterboxd settings
           </a>
           <button
             type="button"

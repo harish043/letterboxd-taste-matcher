@@ -5,6 +5,7 @@ import {
   buildMatchResult,
   searchMatches,
   searchMembers,
+  getFilmPoster,
   LetterboxdNotFoundError,
   TooFewFavoritesError,
   CloudflareBlockedError,
@@ -66,6 +67,48 @@ const getCachedFansPage = unstable_cache(
   ["fans-page"],
   { revalidate: FANS_CACHE_TTL_SECONDS }
 );
+
+// Poster URLs are stable per film, so they get their own 24h cache: one
+// fetch serves every scan that includes the film. Failures throw (never
+// cached) and are retried on the next scan — a bad burst can't poison the
+// cache the way embedding posters in the top-four cache did.
+const getCachedFilmPoster = unstable_cache(
+  async (slug: string) => {
+    const url = await getFilmPoster(slug);
+    if (!url) throw new Error("Poster unavailable.");
+    return url;
+  },
+  ["film-poster"],
+  { revalidate: FANS_CACHE_TTL_SECONDS }
+);
+
+/**
+ * Fill poster URLs for a Top 4. Fetched gently (2 at a time) — a 4-request
+ * burst right after the profile fetch was tripping upstream protection and
+ * nulling every poster.
+ */
+async function resolvePosters<T extends { slug: string }>(
+  films: T[]
+): Promise<Array<T & { posterUrl: string | null }>> {
+  const results: Array<T & { posterUrl: string | null }> = new Array(
+    films.length
+  );
+  let cursor = 0;
+  async function worker() {
+    while (cursor < films.length) {
+      const i = cursor++;
+      const film = films[i];
+      results[i] = {
+        ...film,
+        posterUrl: await getCachedFilmPoster(film.slug).catch(() => null),
+      };
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(2, films.length || 1) }, worker)
+  );
+  return results;
+}
 
 export async function POST(request: Request) {
   const startedAt = performance.now();
@@ -169,6 +212,10 @@ export async function POST(request: Request) {
       throw new TooFewFavoritesError(username, topFour.length);
     }
 
+    // Posters live in a per-film cache layer (see resolvePosters), separate
+    // from the profile cache so failures heal on the next scan.
+    const resolvedTopFour = await resolvePosters(topFour);
+
     if (SCRAPE_MODE === "search") {
       // Primary: Letterboxd member-search, one query per film combination,
       // finds users sharing the Top 4 films. Exact shared films are derived
@@ -176,7 +223,7 @@ export async function POST(request: Request) {
       // profile fetches.
       // Lazy tiers: minTier=2 skips the 4 single-film queries (the 1-match
       // tier is only fetched when the client actually asks for it).
-      const { matches } = await searchMatches(topFour, {
+      const { matches } = await searchMatches(resolvedTopFour, {
         excludeUsername: username,
         search: getCachedSearch,
         minTier: minMatches,
@@ -204,7 +251,7 @@ export async function POST(request: Request) {
 
       return Response.json({
         username,
-        topFour,
+        topFour: resolvedTopFour,
         stats,
         matchCount: totalMatches,
         totalMatches,
@@ -215,7 +262,7 @@ export async function POST(request: Request) {
     }
 
     // Fallback: fan-page scraping (SCRAPE_MODE=pages).
-    const topFourSlugs = topFour.map((film) => film.slug);
+    const topFourSlugs = resolvedTopFour.map((film) => film.slug);
     const { perFilm } = await getSharedFans(topFourSlugs, {
       maxPagesPerFilm,
       delayMs,
@@ -240,7 +287,7 @@ export async function POST(request: Request) {
 
     return Response.json({
       username,
-      topFour,
+      topFour: resolvedTopFour,
       stats,
       matchCount: totalMatches,
       totalMatches,

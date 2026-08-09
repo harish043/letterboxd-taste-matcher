@@ -217,10 +217,12 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
 
 /**
  * Fetch a Letterboxd profile page and return the user's Top 4 favorite films
- * (slug, title, release year, poster URL) plus their profile stats.
+ * (slug, title, release year) plus their profile stats. Poster URLs are NOT
+ * resolved here — they're filled in by the route via a per-film cached layer
+ * (see getCachedFilmPoster) so a failed poster fetch never poisons this cache.
  *
  * @param {string} username Letterboxd username.
- * @returns {Promise<{ topFour: Array<{ slug: string, title: string, year: string|null, posterUrl: string|null }>, stats: { films: number|null, thisYear: number|null } }>}
+ * @returns {Promise<{ topFour: Array<{ slug: string, title: string, year: string|null, posterUrl: null }>, stats: { films: number|null, thisYear: number|null } }>}
  * @throws {LetterboxdNotFoundError} Profile does not exist.
  * @throws {TooFewFavoritesError} Profile exists with fewer than 4 favorites.
  * @throws {ProxyTimeoutError|ProxyError|CloudflareBlockedError} Transport failure.
@@ -240,15 +242,7 @@ export async function getTopFour(username) {
     throw new TooFewFavoritesError(username, films.length);
   }
 
-  // Resolve a poster for each film. The profile only exposes a JS-resolvable
-  // poster path, so fetch each film page once and read its og:image — that's
-  // a stable CDN URL that returns a real image.
-  const topFour = await Promise.all(
-    films.map(async (film) => ({
-      ...film,
-      posterUrl: await getFilmPoster(film.slug),
-    }))
-  );
+  const topFour = films.map((film) => ({ ...film, posterUrl: null }));
 
   // Stats come from the same profile HTML we already fetched — no extra call.
   const stats = parseProfileStats(html);

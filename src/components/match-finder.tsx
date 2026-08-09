@@ -133,18 +133,46 @@ export default function MatchFinder() {
   }, []);
 
   async function fetchMatches(name: string, minMatches: number) {
-    const res = await fetch("/api/match", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: name,
-        ...DEFAULT_OPTIONS,
-        minMatches,
-      }),
-    });
-    const data = await res.json();
+    let res: Response;
+    try {
+      res = await fetch("/api/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: name,
+          ...DEFAULT_OPTIONS,
+          minMatches,
+        }),
+      });
+    } catch {
+      throw new ScanError("Could not reach the server. Try again in a moment.");
+    }
+
+    let data: unknown = null;
+    try {
+      data = await res.json();
+    } catch {
+      // non-JSON body (proxy error page, platform error); handled below
+    }
+
     if (!res.ok) {
-      throw new ScanError(data?.error ?? "Something went wrong on our side.");
+      // Error payloads can be a string ({ error: "..." }) or an object
+      // ({ error: { code, message } } — Vercel platform failures). Coerce
+      // both to a readable message; never surface "[object Object]".
+      const raw = (data as { error?: unknown } | null)?.error;
+      const message =
+        typeof raw === "string"
+          ? raw
+          : typeof (raw as { message?: unknown } | null)?.message === "string"
+            ? (raw as { message: string }).message
+            : "Something went wrong on our side.";
+      throw new ScanError(message);
+    }
+
+    if (data === null) {
+      throw new ScanError(
+        "The server returned an unexpected response. Try again in a moment."
+      );
     }
     return data as MatchResult;
   }

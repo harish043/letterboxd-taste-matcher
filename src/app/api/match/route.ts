@@ -24,6 +24,9 @@ const DEFAULT_CONCURRENCY = 8;
 // Cap the matches returned so a very popular profile can't produce a
 // multi-megabyte payload; the client shows the true total separately.
 const MAX_MATCHES = 100;
+// Give the scan a hard wall-clock deadline so it returns partial results
+// before Vercel's function timeout kills it with an opaque platform error.
+const SCAN_DEADLINE_MS = 50000;
 // Primary pipeline uses Letterboxd's member-search engine (fast, cheap, more
 // complete). Set SCRAPE_MODE=pages to fall back to fan-page scraping.
 const SCRAPE_MODE = process.env.SCRAPE_MODE === "pages" ? "pages" : "search";
@@ -177,6 +180,7 @@ export async function POST(request: Request) {
         excludeUsername: username,
         search: getCachedSearch,
         minTier: minMatches,
+        deadlineAt: Date.now() + SCAN_DEADLINE_MS,
       });
 
       // Honor minMatches (safety net; combos already start at minTier) and cap

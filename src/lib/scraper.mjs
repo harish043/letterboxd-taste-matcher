@@ -553,11 +553,18 @@ export async function getSharedFans(
  * @param {number} [options.minTier=1] Smallest film-combination size to query.
  *   1 includes single-film queries (the 1-match tier); 2 skips them, which
  *   drops the 1-match tier but saves 4 of 15 queries.
+ * @param {number|null} [options.deadlineAt] Epoch ms. Once passed, no new
+ *   queries are issued and the result degrades gracefully to partial matches.
  * @returns {Promise<{ matches: Array<{ username: string, displayName: string, avatar: string|null, sharedFilms: string[], percentage: number }> }>}
  */
 export async function searchMatches(
   topFour,
-  { excludeUsername = null, search = searchMembers, minTier = 1 } = {}
+  {
+    excludeUsername = null,
+    search = searchMembers,
+    minTier = 1,
+    deadlineAt = null,
+  } = {}
 ) {
   const slugs = topFour.map((film) => film.slug);
 
@@ -591,6 +598,9 @@ export async function searchMatches(
   let cursor = 0;
   async function worker() {
     while (cursor < queries.length) {
+      // Stop issuing new queries once the deadline passes; the response
+      // degrades to whatever completed in time.
+      if (deadlineAt && Date.now() >= deadlineAt) break;
       const i = cursor++;
       try {
         results[i] = {
@@ -611,7 +621,7 @@ export async function searchMatches(
 
   const byUsername = new Map();
   results.forEach((result, i) => {
-    if (result.status !== "fulfilled") return;
+    if (result?.status !== "fulfilled") return;
     const combo = queries[i].combo;
     for (const member of result.value) {
       if (excludeUsername && member.username === excludeUsername) continue;

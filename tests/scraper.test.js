@@ -224,3 +224,17 @@ test("searchMatches default minTier includes all 15 queries", async () => {
   assert.equal(called.length, 15);
   assert.deepEqual(matches, []);
 });
+
+test("searchMatches stops issuing queries after the deadline", async () => {
+  const called = [];
+  const { matches } = await searchMatches(TOP_FOUR, {
+    search: async (url) => {
+      called.push(url);
+      return [];
+    },
+    deadlineAt: Date.now() - 1,
+  });
+
+  assert.equal(called.length, 0);
+  assert.deepEqual(matches, []);
+});

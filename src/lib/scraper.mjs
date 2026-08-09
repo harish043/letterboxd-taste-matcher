@@ -442,6 +442,83 @@ export function parseProfileStats(html) {
 }
 
 /**
+ * Parse the bio text from a profile page. Long bios are truncated on the page
+ * with a link to a full-text AJAX endpoint; that URL is returned too so
+ * callers can fetch the complete bio when the snippet isn't enough.
+ *
+ * @param {string} html Raw profile page HTML.
+ * @returns {{ bio: string, fullTextUrl: string|null }}
+ */
+export function parseProfileBio(html) {
+  const $ = cheerio.load(html);
+  const content = $(".bio .js-bio-content").first();
+  const bio = content.length ? content.text().trim() : "";
+  const fullTextUrl = content.attr("data-full-text-url") || null;
+  return { bio, fullTextUrl };
+}
+
+/**
+ * Extract the bio text from the full-text AJAX payload. The endpoint is
+ * consumed by Letterboxd's own JS, so the shape is not contractual — handle
+ * JSON ({ body } / { text } / { content }) and raw text/HTML fragments.
+ *
+ * @param {string} payload Response body of the full-text endpoint.
+ * @returns {string} The full bio text.
+ */
+function extractFullBioText(payload) {
+  if (typeof payload !== "string" || payload.trim() === "") return "";
+  let parsed = null;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    // not JSON — fall through to fragment handling
+  }
+  if (parsed && typeof parsed === "object") {
+    for (const key of ["body", "text", "content"]) {
+      if (typeof parsed[key] === "string" && parsed[key].trim() !== "") {
+        return parsed[key].trim();
+      }
+    }
+  }
+  const $ = cheerio.load(payload);
+  return $.root().text().trim();
+}
+
+/**
+ * Fetch a user's profile and return their bio text. Deliberately bypasses all
+ * caching — the bio is the ownership-challenge target and must be read fresh.
+ * Long bios are truncated on the page; `fullTextUrl` (when present) lets the
+ * caller fetch the complete bio via getFullProfileBio if the token isn't in
+ * the snippet.
+ *
+ * @param {string} username Letterboxd username.
+ * @returns {Promise<{ bio: string, fullTextUrl: string|null }>}
+ * @throws {LetterboxdNotFoundError|ProxyTimeoutError|ProxyError|CloudflareBlockedError}
+ */
+export async function getProfileBio(username) {
+  const html = await fetchHtml(`${BASE_URL}/${username}/`);
+  if (
+    html.includes("Letterboxd - Not Found") ||
+    !html.includes("profile-header")
+  ) {
+    throw new LetterboxdNotFoundError(username);
+  }
+  return parseProfileBio(html);
+}
+
+/**
+ * Fetch the complete bio from the full-text AJAX endpoint (best-effort).
+ *
+ * @param {string} fullTextUrl Relative URL from `data-full-text-url`.
+ * @returns {Promise<{ bio: string }>}
+ * @throws {ProxyTimeoutError|ProxyError|CloudflareBlockedError}
+ */
+export async function getFullProfileBio(fullTextUrl) {
+  const payload = await fetchHtml(`${BASE_URL}${fullTextUrl}`);
+  return { bio: extractFullBioText(payload) };
+}
+
+/**
  * Fetch one fans page and return the usernames on it.
  *
  * @param {string} slug

@@ -13,6 +13,7 @@ import {
   buildSearchUrl,
   parseSearchResults,
   parseProfileStats,
+  parseProfileBio,
   generateSessionId,
   searchMatches,
 } from "../src/lib/scraper.mjs";
@@ -176,6 +177,30 @@ test("parseProfileStats returns nulls when no stats block", () => {
     films: null,
     thisYear: null,
   });
+});
+
+test("parseProfileBio extracts bio text and the full-text URL", () => {
+  const html = fixtures("profile-stats.html");
+  const { bio, fullTextUrl } = parseProfileBio(html);
+  assert.equal(
+    bio,
+    "fav dir - cronenberg, lynch, miike, wong kar wai, lars von trier"
+  );
+  assert.equal(fullTextUrl, "/s/full-text/person:7210395/");
+});
+
+test("parseProfileBio returns empty bio when no bio block", () => {
+  assert.deepEqual(parseProfileBio("<html><body></body></html>"), {
+    bio: "",
+    fullTextUrl: null,
+  });
+});
+
+test("parseProfileBio finds a token embedded in the bio", () => {
+  const html =
+    '<div class="bio js-bio"><div class="js-collapsible-text body-text -small -reset js-bio-content" data-full-text-url="/s/full-text/person:1/">cinema twin hunt AB9X2Z ends here</div></div>';
+  const { bio } = parseProfileBio(html);
+  assert.ok(bio.includes("AB9X2Z"));
 });
 
 const TOP_FOUR = ["a", "b", "c", "d"].map((slug) => ({

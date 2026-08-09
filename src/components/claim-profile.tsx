@@ -129,19 +129,47 @@ export default function ClaimProfile({
     setFlow("verifying");
     setError(null);
     try {
-      const res = await fetch("/api/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, token }),
-      });
-      const data = await res.json();
+      let res: Response;
+      try {
+        res = await fetch("/api/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, token }),
+        });
+      } catch {
+        throw new Error("Could not reach the server. Try again in a moment.");
+      }
+
+      // Error payloads can be a string ({ error: "..." }) or an object
+      // ({ error: { message } } — platform failures). Non-JSON/empty bodies
+      // (a killed function) fall back to a readable message, never a
+      // JSON.parse exception.
+      let data: unknown = null;
+      try {
+        data = await res.json();
+      } catch {
+        // empty or non-JSON body
+      }
+
       if (!res.ok) {
-        const raw = data?.error;
+        const raw = (data as { error?: unknown } | null)?.error;
         throw new Error(
-          typeof raw === "string" ? raw : "Verification failed. Please try again."
+          typeof raw === "string"
+            ? raw
+            : typeof (raw as { message?: unknown } | null)?.message === "string"
+              ? (raw as { message: string }).message
+              : "Verification failed. The server returned an error. Please try again."
         );
       }
-      await signInWithCustomToken(getFirebaseAuth(), data.token);
+
+      const customToken = (data as { token?: unknown } | null)?.token;
+      if (typeof customToken !== "string") {
+        throw new Error(
+          "The server returned an unexpected response. Try again in a moment."
+        );
+      }
+
+      await signInWithCustomToken(getFirebaseAuth(), customToken);
       setFlow("claimed");
     } catch (err) {
       setError(

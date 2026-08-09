@@ -14,6 +14,26 @@ export const maxDuration = 30;
 
 const USERNAME_REGEX = /^[a-zA-Z0-9_]{1,30}$/;
 const TOKEN_REGEX = /^[A-Za-z0-9]{6}$/;
+// Bound the scrape so the route always answers with a JSON body inside the
+// function budget — a killed platform function returns an empty body, which
+// the client can't parse.
+const SCRAPE_DEADLINE_MS = 20000;
+
+class VerifyTimeoutError extends Error {
+  constructor() {
+    super("The verification request timed out. Please try again.");
+    this.name = "VerifyTimeoutError";
+  }
+}
+
+/** Race a promise against a hard deadline, always answering before it dies. */
+function withDeadline<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new VerifyTimeoutError()), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Ownership challenge: the user places a 6-character token in their Letterboxd
@@ -54,14 +74,25 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { bio, fullTextUrl } = await getProfileBio(username);
-    const hasToken =
-      bio.includes(token) ||
-      // Long bios are truncated on the profile page; check the full text too.
-      (fullTextUrl &&
-        (await getFullProfileBio(fullTextUrl).then(({ bio: full }) =>
-          full.includes(token)
-        )));
+    const { bio, fullTextUrl } = await withDeadline(
+      getProfileBio(username),
+      SCRAPE_DEADLINE_MS
+    );
+    // Long bios are truncated on the profile page; check the full text too
+    // (best-effort — a failed full-text fetch just reports the token as
+    // missing from the truncated bio).
+    let hasToken = bio.includes(token);
+    if (!hasToken && fullTextUrl) {
+      try {
+        const { bio: full } = await withDeadline(
+          getFullProfileBio(fullTextUrl),
+          SCRAPE_DEADLINE_MS
+        );
+        hasToken = full.includes(token);
+      } catch {
+        // best-effort fallback only
+      }
+    }
 
     if (!hasToken) {
       return Response.json(
@@ -77,6 +108,13 @@ export async function POST(request: Request) {
     const customToken = await getAuth(admin).createCustomToken(username);
     return Response.json({ token: customToken });
   } catch (error) {
+    if (error instanceof VerifyTimeoutError) {
+      return Response.json(
+        { error: error.message },
+        { status: 504 }
+      );
+    }
+
     if (error instanceof LetterboxdNotFoundError) {
       return Response.json(
         {

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   deleteDoc,
+  deleteField,
   doc,
   getDoc,
   setDoc,
@@ -189,18 +190,43 @@ export default function ClaimProfile({
   async function saveSocials() {
     setSaving(true);
     setError(null);
-    const values: SocialLinks = {
-      instagram: (form.instagram ?? existing?.instagram)?.trim() || undefined,
-      x: (form.x ?? existing?.x)?.trim() || undefined,
-      discord: (form.discord ?? existing?.discord)?.trim() || undefined,
-    };
+    const instagram = (form.instagram ?? existing?.instagram)?.trim() ?? "";
+    const x = (form.x ?? existing?.x)?.trim() ?? "";
+    const discord = (form.discord ?? existing?.discord)?.trim() ?? "";
+
+    // Firestore rejects `undefined` values and the security rules only allow
+    // the three known keys — so write exactly the fields that changed:
+    // filled fields as strings, cleared fields as deletions.
+    const updates: Record<string, unknown> = {};
+    if (instagram) updates.instagram = instagram;
+    else if (existing?.instagram) updates.instagram = deleteField();
+    if (x) updates.x = x;
+    else if (existing?.x) updates.x = deleteField();
+    if (discord) updates.discord = discord;
+    else if (existing?.discord) updates.discord = deleteField();
+
+    if (Object.keys(updates).length === 0) {
+      setError("Enter at least one social handle.");
+      setSaving(false);
+      return;
+    }
+
     try {
-      await setDoc(docId(username), values, { merge: true });
+      await setDoc(docId(username), updates, { merge: true });
+      const values: SocialLinks = {};
+      if (instagram) values.instagram = instagram;
+      if (x) values.x = x;
+      if (discord) values.discord = discord;
       setExisting(values);
       setForm({});
       onClaimed(username, values);
-    } catch {
-      setError("Couldn't save your socials. Please try again.");
+    } catch (err) {
+      console.error("[claim] save failed:", err);
+      setError(
+        err instanceof Error && err.message
+          ? `Couldn't save your socials — ${err.message}`
+          : "Couldn't save your socials. Please try again."
+      );
     } finally {
       setSaving(false);
     }

@@ -230,7 +230,8 @@ async function fetchHtml(url, { attempts = MAX_ATTEMPTS } = {}) {
 export async function getTopFour(username) {
   const url = `${BASE_URL}/${username}/`;
   const html = await fetchHtml(url);
-  const films = parseTopFour(html);
+  // Single cheerio pass over the page for films + stats.
+  const { films, stats } = parseProfile(html);
 
   if (films.length < 4) {
     // A nonexistent profile returns HTTP 404; distinguish that from a real
@@ -244,10 +245,44 @@ export async function getTopFour(username) {
 
   const topFour = films.map((film) => ({ ...film, posterUrl: null }));
 
-  // Stats come from the same profile HTML we already fetched — no extra call.
-  const stats = parseProfileStats(html);
-
   return { topFour, stats };
+}
+
+/**
+ * Parse everything a profile page carries (Top 4 films, stats, bio) in a
+ * single cheerio pass — the page is ~180KB, so re-parsing it once per field
+ * wastes real CPU on every profile fetch.
+ *
+ * @param {string} html Raw profile page HTML.
+ * @returns {{ films: Array<{ slug: string, title: string, year: string|null }>, stats: { films: number|null, thisYear: number|null }, bio: string, fullTextUrl: string|null }}
+ */
+function parseProfile(html) {
+  const $ = cheerio.load(html);
+
+  const films = [];
+  $("#favourites li.griditem div.react-component").each((_, el) => {
+    const slug = $(el).attr("data-item-slug");
+    const title = $(el).attr("data-item-name") || "";
+    const yearMatch = String(title).match(/\((\d{4})\)\s*$/);
+    if (slug) films.push({ slug, title, year: yearMatch ? yearMatch[1] : null });
+  });
+
+  const stats = { films: null, thisYear: null };
+  $(".profile-stats h4.profile-statistic").each((_, el) => {
+    const value = $(el).find(".value").text().trim().replace(/,/g, "");
+    const label = $(el).find(".definition").text().trim().toLowerCase();
+    if (!value || !label) return;
+    const num = Number(value);
+    if (Number.isNaN(num)) return;
+    if (label === "films") stats.films = num;
+    else if (label.includes("this year")) stats.thisYear = num;
+  });
+
+  const content = $(".bio .js-bio-content").first();
+  const bio = content.length ? content.text().trim() : "";
+  const fullTextUrl = content.attr("data-full-text-url") || null;
+
+  return { films, stats, bio, fullTextUrl };
 }
 
 /**
@@ -259,15 +294,7 @@ export async function getTopFour(username) {
  * @returns {Array<{ slug: string, title: string, year: string|null }>}
  */
 export function parseTopFour(html) {
-  const $ = cheerio.load(html);
-  const films = [];
-  $("#favourites li.griditem div.react-component").each((_, el) => {
-    const slug = $(el).attr("data-item-slug");
-    const title = $(el).attr("data-item-name") || "";
-    const yearMatch = String(title).match(/\((\d{4})\)\s*$/);
-    if (slug) films.push({ slug, title, year: yearMatch ? yearMatch[1] : null });
-  });
-  return films;
+  return parseProfile(html).films;
 }
 
 /**
@@ -421,18 +448,7 @@ export function parseSearchResults(html) {
  * @returns {{ films: number|null, thisYear: number|null }}
  */
 export function parseProfileStats(html) {
-  const $ = cheerio.load(html);
-  const stats = { films: null, thisYear: null };
-  $(".profile-stats h4.profile-statistic").each((_, el) => {
-    const value = $(el).find(".value").text().trim().replace(/,/g, "");
-    const label = $(el).find(".definition").text().trim().toLowerCase();
-    if (!value || !label) return;
-    const num = Number(value);
-    if (Number.isNaN(num)) return;
-    if (label === "films") stats.films = num;
-    else if (label.includes("this year")) stats.thisYear = num;
-  });
-  return stats;
+  return parseProfile(html).stats;
 }
 
 /**
@@ -444,10 +460,7 @@ export function parseProfileStats(html) {
  * @returns {{ bio: string, fullTextUrl: string|null }}
  */
 export function parseProfileBio(html) {
-  const $ = cheerio.load(html);
-  const content = $(".bio .js-bio-content").first();
-  const bio = content.length ? content.text().trim() : "";
-  const fullTextUrl = content.attr("data-full-text-url") || null;
+  const { bio, fullTextUrl } = parseProfile(html);
   return { bio, fullTextUrl };
 }
 
@@ -503,7 +516,8 @@ export async function getProfileBio(
   ) {
     throw new LetterboxdNotFoundError(username);
   }
-  return parseProfileBio(html);
+  const { bio, fullTextUrl } = parseProfile(html);
+  return { bio, fullTextUrl };
 }
 
 /**
@@ -742,7 +756,11 @@ export async function searchMatches(
  * @returns {Promise<Array<{ username: string, displayName: string, avatar: string|null }>>}
  */
 export async function searchMembers(query) {
-  const html = await fetchHtml(query, { attempts: 3 });
+  // 2 attempts (not the default 3): search queries are the volume driver
+  // (11-15 per scan) and results are cache-keyed, so a retried query rarely
+  // succeeds where the first two attempts failed — this caps worst-case
+  // latency on cold scans.
+  const html = await fetchHtml(query, { attempts: 2 });
   return parseSearchResults(html);
 }
 

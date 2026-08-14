@@ -31,20 +31,13 @@ type Film = {
   posterUrl: string | null;
 };
 
-type ScannedFilm = {
-  totalFans: number | null;
-  scannedPages: number;
-};
-
 type MatchResult = {
   username: string;
   topFour: Film[];
   stats?: { films: number | null; thisYear: number | null };
-  matchCount: number;
   totalMatches: number;
   truncated: boolean;
   matches: Match[];
-  scanned: Record<string, ScannedFilm> | null;
 };
 
 type Status = "idle" | "loading" | "success" | "error";
@@ -72,6 +65,13 @@ const LOADING_STEPS = [
 
 const HISTORY_KEY = "tm:history";
 const LAST_KEY = "tm:last";
+// Per-username result cache: repeat scans (history chips, deep links) render
+// instantly from localStorage while a background refresh keeps them fresh.
+const SCANS_KEY = "tm:scans";
+const SCAN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_SCANS_CACHE = 5;
+
+type ScanCache = Record<string, { ts: number; result: MatchResult }>;
 
 function readStorage(key: string): unknown {
   try {
@@ -88,6 +88,30 @@ function writeStorage(key: string, value: unknown): void {
   } catch {
     // storage unavailable (private mode / quota); features degrade gracefully
   }
+}
+
+function readScanCache(name: string): MatchResult | null {
+  const raw = readStorage(SCANS_KEY) as ScanCache | null;
+  if (!raw || typeof raw !== "object") return null;
+  const entry = raw[name];
+  if (!entry || typeof entry.ts !== "number" || !entry.result) return null;
+  if (Date.now() - entry.ts > SCAN_CACHE_TTL_MS) return null;
+  return entry.result;
+}
+
+function writeScanCache(name: string, result: MatchResult): void {
+  const raw = (readStorage(SCANS_KEY) as ScanCache | null) ?? {};
+  const next: ScanCache = { ...raw, [name]: { ts: Date.now(), result } };
+  // Result payloads are ~100-250KB; keep the cache bounded.
+  const keys = Object.keys(next);
+  if (keys.length > MAX_SCANS_CACHE) {
+    const evict = keys
+      .map((k) => ({ k, ts: next[k].ts }))
+      .sort((a, b) => a.ts - b.ts)
+      .slice(0, keys.length - MAX_SCANS_CACHE);
+    for (const { k } of evict) delete next[k];
+  }
+  writeStorage(SCANS_KEY, next);
 }
 
 export default function MatchFinder() {
@@ -199,34 +223,60 @@ export default function MatchFinder() {
     return data as MatchResult;
   }
 
+  /** Common success path: render, deep-link, history, last-result + scan caches. */
+  function finalizeScan(name: string, data: MatchResult) {
+    setResult(data);
+    setStatus("success");
+
+    // Deep-link the successful result.
+    window.history.replaceState(
+      null,
+      "",
+      `?username=${encodeURIComponent(name)}`
+    );
+
+    // Update recent-history chips.
+    setHistory((prev) => {
+      const next = [name, ...prev.filter((h) => h !== name)].slice(0, 5);
+      writeStorage(HISTORY_KEY, next);
+      return next;
+    });
+
+    // Cache the last result so a plain revisit restores it instantly.
+    writeStorage(LAST_KEY, { username: name, result: data });
+    writeScanCache(name, data);
+  }
+
+  /** Background refresh of a cached scan; failures keep the cached result. */
+  async function refreshScan(name: string) {
+    try {
+      const data = await fetchMatches(name, DEFAULT_MIN_MATCHES);
+      finalizeScan(name, data);
+    } catch {
+      // keep showing the cached result
+    }
+  }
+
   async function runScan(name: string) {
     if (!name) return;
     setUsername(name);
     setStatus("loading");
     setError(null);
+
+    // Repeat scan: render the cached result instantly (no loading state),
+    // then refresh in the background so data is never older than the TTL.
+    const cached = readScanCache(name);
+    if (cached) {
+      finalizeScan(name, cached);
+      void refreshScan(name);
+      return;
+    }
+
     setResult(null);
 
     try {
       const data = await fetchMatches(name, DEFAULT_MIN_MATCHES);
-      setResult(data);
-      setStatus("success");
-
-      // Deep-link the successful result.
-      window.history.replaceState(
-        null,
-        "",
-        `?username=${encodeURIComponent(name)}`
-      );
-
-      // Update recent-history chips.
-      setHistory((prev) => {
-        const next = [name, ...prev.filter((h) => h !== name)].slice(0, 5);
-        writeStorage(HISTORY_KEY, next);
-        return next;
-      });
-
-      // Cache the last result so a plain revisit restores it instantly.
-      writeStorage(LAST_KEY, { username: name, result: data });
+      finalizeScan(name, data);
     } catch (error) {
       if (error instanceof ScanError) {
         setError(error.message);
@@ -298,7 +348,7 @@ export default function MatchFinder() {
       </form>
 
       <p className="mt-4 font-mono text-xs text-slate">
-        e.g. dave &middot; checks the fans of your four favorites
+        e.g. dave &middot; finds the people who share your Top 4
       </p>
 
       {history.length > 0 && (
@@ -664,8 +714,7 @@ function Results({
 
       {matches.length === 0 ? (
         <p className="mt-10 text-sm leading-7 text-slate">
-          No overlapping fans yet. The scan only covers the first few pages of
-          each film&rsquo;s fan list &mdash; try a more popular profile.
+          No overlapping fans found &mdash; try a more popular profile.
         </p>
       ) : (
         <>
@@ -752,8 +801,6 @@ function Results({
           )}
         </>
       )}
-
-      <Breakdown scanned={result.scanned} />
     </div>
   );
 }
@@ -931,32 +978,5 @@ function PercentageBadge({ percentage }: { percentage: number }) {
     >
       {percentage}%
     </span>
-  );
-}
-
-function Breakdown({
-  scanned,
-}: {
-  scanned: Record<string, ScannedFilm> | null;
-}) {
-  if (!scanned || Object.keys(scanned).length === 0) return null;
-  return (
-    <section className="mt-16 border-t border-steel pt-8">
-      <h3 className="font-mono text-xs uppercase tracking-[0.3em] text-slate">
-        What we scanned
-      </h3>
-      <dl className="mt-6 grid gap-px overflow-hidden rounded-2xl border border-steel bg-steel sm:grid-cols-2 lg:grid-cols-4">
-        {Object.entries(scanned).map(([slug, info]) => (
-          <div key={slug} className="bg-surface px-5 py-4">
-            <dt className="truncate font-mono text-sm text-bone">{slug}</dt>
-            <dd className="mt-2 font-mono text-xs text-slate">
-              {info.totalFans?.toLocaleString() ?? "?"} fans &middot;{" "}
-              {info.scannedPages} page
-              {info.scannedPages === 1 ? "" : "s"}
-            </dd>
-          </div>
-        ))}
-      </dl>
-    </section>
   );
 }

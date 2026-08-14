@@ -18,7 +18,7 @@ import type { SocialLinks } from "@/components/social-icons";
 
 // Explicit user-driven flow states; the idle/viewing/claimed states are
 // derived from auth + the existing Firestore doc during render (no effects).
-type Flow = "none" | "token" | "verifying" | "claimed";
+type Flow = "none" | "token" | "claimed";
 
 const TOKEN_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I
 
@@ -390,7 +390,7 @@ export default function ClaimProfile({
     );
   }
 
-  if (step === "token" || step === "verifying") {
+  if (step === "token") {
     const pollNote =
       infraErrors >= MAX_POLL_INFRA_ERRORS
         ? "Still checking \u2014 a hiccup on our side. Hang tight."

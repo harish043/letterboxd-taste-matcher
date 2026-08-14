@@ -18,6 +18,14 @@ const TOKEN_REGEX = /^[A-Za-z0-9]{6}$/;
 // function budget — a killed platform function returns an empty body, which
 // the client can't parse.
 const SCRAPE_DEADLINE_MS = 20000;
+// The client polls the bio every few seconds while the user edits; a short
+// in-memory cache collapses overlapping poll/focus/manual checks into one
+// scrape. Deliberately much shorter than the poll interval, and never used
+// across instances — it only dedupes bursts within an instance.
+const SCRAPE_CACHE_MS = 2000;
+
+/** username -> { bio, fullTextUrl, at } — successful scrapes only. */
+const bioCache = new Map<string, { bio: string; fullTextUrl: string | null; at: number }>();
 
 class VerifyTimeoutError extends Error {
   constructor() {
@@ -97,13 +105,30 @@ async function handleVerify(request: Request) {
   }
 
   try {
-    // One light scrape: the profile page, parsed for its bio text. The token
-    // is checked as a plain substring of the bio HTML — no extra requests
-    // beyond the (best-effort) full-text fetch for truncated bios.
-    const { bio, fullTextUrl } = await withDeadline(
-      getProfileBio(username, { attempts: 2 }),
-      SCRAPE_DEADLINE_MS
-    );
+    // Serve recent successful scrapes from the short dedup cache — the bio is
+    // still read fresh within seconds, so the challenge guarantee holds.
+    const cachedBio = bioCache.get(username);
+    let bio: string;
+    let fullTextUrl: string | null;
+    if (cachedBio && Date.now() - cachedBio.at < SCRAPE_CACHE_MS) {
+      bio = cachedBio.bio;
+      fullTextUrl = cachedBio.fullTextUrl;
+    } else {
+      const { bio: freshBio, fullTextUrl: freshUrl } = await withDeadline(
+        getProfileBio(username, { attempts: 2 }),
+        SCRAPE_DEADLINE_MS
+      );
+      bio = freshBio;
+      fullTextUrl = freshUrl;
+      bioCache.set(username, { bio, fullTextUrl, at: Date.now() });
+      // Bound growth on long-lived instances (at most ~1 entry/sec of churn).
+      if (bioCache.size > 1000) {
+        const cutoff = Date.now() - SCRAPE_CACHE_MS;
+        for (const [key, entry] of bioCache) {
+          if (entry.at < cutoff) bioCache.delete(key);
+        }
+      }
+    }
     // Long bios are truncated on the profile page; check the full text too
     // (best-effort — a failed full-text fetch just reports the token as
     // missing from the truncated bio).
